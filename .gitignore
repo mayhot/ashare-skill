@@ -1,0 +1,27 @@
+.deps/
+
+# Keep dated final reports in runs/, ignore process artifacts.
+runs/**/data/
+runs/**/scripts/
+runs/**/*.json
+runs/**/*.csv
+runs/**/*.pyc
+
+__pycache__/
+*.py[cod]
+*$py.class
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.env
+.env.*
+!.env.example
+
+*.log
+*.tmp
+*.bak
+
+.DS_Store
+Thumbs.db

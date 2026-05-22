@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股双策略合并报告"
+  short_description: "合并慢牛与右侧趋势同日筛选结果并生成可追溯研究报告"
+  default_prompt: "Use $ashare-merged-report to merge today's ashare-ai-slowbull and ashare-trend-buy run reports into one consolidated A-share watchlist report."

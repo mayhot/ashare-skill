@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股右侧趋势买入"
+  short_description: "按趋势、量价、主线、支撑风控和MACD/KDJ筛选A股右侧观察池"
+  default_prompt: "使用 $ashare-trend-buy，按统一报告格式输出数据说明、A/B/C分档、核心表格、逐个点评、短名单、买点观察、失效条件和风险提示；每个档位最多展示5只，保留右侧趋势、量价健康、支撑/失效位、MACD/KDJ辅助判断和规则内买点模型，并只将最终结果保存到 runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md，不保留过程数据。"

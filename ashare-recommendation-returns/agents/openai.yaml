@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股推荐收益跟踪"
+  short_description: "跟踪两个A股筛选skill推荐标的的逐日收益与5/10/20日汇总"
+  default_prompt: "Use $ashare-recommendation-returns to calculate daily returns and 5/10/20-day summaries for ashare-trend-buy and ashare-ai-slowbull recommendations."
