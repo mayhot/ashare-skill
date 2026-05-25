@@ -47,9 +47,9 @@ Score out of 100:
 | Dimension | Weight | Guidance |
 |---|---:|---|
 | Trend structure | 17 | 5/10/20-day alignment, higher lows, price above key averages |
-| Pullback/breakout quality | 13 | shrinking-volume stabilization or clean platform breakout |
+| Pullback/breakout quality | 13 | shrinking-volume stabilization, trend-stock pullback near the 20-day MA with stabilization, or clean platform breakout |
 | Volume-price health | 13 | moderate expansion on rises, contraction on pullbacks, no exhaustion signal |
-| Theme strength | 15 | current policy, earnings, industry, AI hardware, semiconductor, PCB, CPO, robot, energy-storage, or other verified theme |
+| Theme strength | 15 | current policy, earnings, industry, AI hardware, semiconductor, PCB, CPO, robot, energy-storage, or other verified theme; prefer recognized high-awareness, high-popularity front-runners in their industry segment |
 | Support and risk control | 15 | clear support, invalidation level, acceptable distance to support |
 | Fundamental/theme logic | 15 | financial reports, announcements, orders, products, capacity, policy, or industry inflection |
 | Technical auxiliaries | 7 | MACD/KDJ confirmation or warning only |
@@ -67,9 +67,12 @@ Tier rules:
 Hard downgrade/exclusion rules override raw score:
 
 - If price is below the 20-day MA and 5/10/20-day MAs remain bearish, cap at C or remove.
+- For trend stocks, a pullback toward the 20-day MA is an opportunity only after stabilization: strong stabilization near -1% to +5% from the 20-day MA with calm volume and no obvious MACD damage, or watchable stabilization near -2% to +10% with controlled volume.
+- For same-tier candidates, prefer recognized high-awareness, high-popularity front-runners in their industry segment; use sector-level turnover/relative-strength rank when available, and downgrade weak followers with low recognition or poor relative strength.
 - If price is far above the 20-day MA, force downgrade even when score is high. Use 18% as a caution threshold and 25% as a hard “do not chase” threshold.
 - If the stock just had a sharp one-day spike and has not consolidated, do not keep A档.
 - If there is KDJ高位死叉, MACD死叉 with broken support, high-position huge-volume upper shadow, failed breakout, or放量大跌, downgrade or remove.
+- If a high raw-score stock is downgraded or removed by a hard rule, state the raw score, hard-rule reason, and risk-adjusted tier clearly in the table or commentary.
 - MACD/KDJ are auxiliary only. They must never be the sole reason for an A档 or buy-point observation.
 
 ## Report Ordering
@@ -99,9 +102,10 @@ Use the same report frame as `ashare-ai-slowbull` so both skills produce compara
 ## 数据说明
 - 数据来源：candidate source, K-line source, fetch method, and saved artifact paths.
 - 数据完整性：candidate count, calculated count, latest K-line date, missing/lagged rows, and whether the candidate pool comes from a same-day top-200 file.
-- 指标口径：MA/volume ratio/MACD/KDJ/support/invalidation/scoring methodology.
+- 指标口径：MA/volume ratio/20-day MA stabilization tier/MACD/KDJ/support/invalidation/front-runner popularity/scoring methodology.
 - 市场环境：main-theme state and whether right-side trading conditions are supportive.
 - 限制说明：lagged K-lines, missing candidates, degraded data source, or items that can only be kept as initial watchlist.
+- 剔除解释：for high raw-score exclusions, state raw score and hard exclusion reason.
 - 展示上限：each tier shows at most 5 names; if a tier has more than 5 candidates, show the highest-score 5 in the final report.
 
 ## 一、筛选结论
@@ -129,6 +133,7 @@ Use the same report frame as `ashare-ai-slowbull` so both skills produce compara
 ## 五、买点观察与失效条件
 - A/B档共同纪律：
 - 均线回踩：
+- 20日线企稳：
 - 平台突破：
 - 强势二买：
 - 统一失效：
@@ -140,10 +145,11 @@ Use the same report frame as `ashare-ai-slowbull` so both skills produce compara
 
 Field guidance for this skill:
 
-- `关键数据` should include turnover amount, turnover ratio, latest move, 20-day MA deviation, and latest K-line date.
-- `证据/逻辑` should focus on main-theme/fundamental logic, not the AI-upstream evidence tier used by `ashare-ai-slowbull`.
+- `关键数据` should include turnover amount, turnover ratio, latest move, 20-day MA deviation, 20-day MA stabilization tier, and latest K-line date.
+- `证据/逻辑` should focus on main-theme/fundamental logic, not the AI-upstream evidence tier used by `ashare-ai-slowbull`; for otherwise similar candidates, state whether the stock is a recognized high-awareness, high-popularity front-runner in its industry segment, preferably with sector-level turnover/strength rank.
 - `支撑/失效` must state a concrete support level, invalidation level, or downgrade trigger.
-- `买点观察` must preserve the right-side models: shrinking-volume pullback, platform breakout, strong second-entry, or slow-bull continuation.
+- `买点观察` must preserve the right-side models: shrinking-volume pullback, 20-day MA stabilization, platform breakout, strong second-entry, or slow-bull continuation.
+- `剔除/暂不追` entries with high raw scores must show the hard exclusion or downgrade reason.
 - Each displayed tier must contain no more than 5 names. Rank within each tier by score before truncating.
 - The final answer shown to the user and the archived `YYYY-MM-DD.md` must contain the same report body.
 

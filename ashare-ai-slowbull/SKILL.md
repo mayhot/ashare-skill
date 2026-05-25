@@ -1,6 +1,6 @@
 ---
 name: ashare-ai-slowbull
-description: Screen A-share candidates for AI hardware upstream second-line slow-bull opportunities, strictly limited to post-close 今日A股成交额前200. Use when the user asks to filter AI硬件上游, 二线补涨, 慢牛趋势, MACD/KDJ金叉死叉, 光模块/光芯片/PCB/CCL/电子布/先进封装/连接器/液冷/AI电源/高速接口芯片等方向, and wants A/B/C分档、评分、剔除理由、买点观察或最终短名单. This skill only runs after the A-share close and is for research watchlists, not direct investment advice.
+description: Screen A-share candidates for AI hardware upstream second-line slow-bull opportunities, strictly limited to post-close 今日A股成交额前200. Use when the user asks to filter AI硬件上游, 二线补涨, 慢牛趋势, MACD/KDJ金叉死叉, 光模块/光芯片/PCB/CCL/电子布/先进封装/连接器/液冷/AI电源/高速接口芯片/AI芯片/半导体设备/存储等方向, and wants A/B/C分档、评分、剔除理由、买点观察或最终短名单. This skill only runs after the A-share close and is for research watchlists, not direct investment advice.
 ---
 
 # A股AI硬件上游二线慢牛标的筛选
@@ -35,7 +35,7 @@ For each real screening run, gather or verify:
 - Current A-share turnover ranking, strictly 今日成交金额前200.
 - `run_time`, `trade_date`, quote/update time, data-source freshness, and whether the run passed the post-close timestamp check.
 - Total market cap, exchange/board, latest price change, recent 3/6/12-month performance, turnover amount, and liquidity.
-- Sector context: AI hardware/optical module/PCB/semiconductor packaging/liquid cooling indices or representative leaders, sector turnover, sector stage, and whether core leaders are breaking down.
+- Sector context: AI hardware/optical module/PCB/chips/semiconductor equipment/semiconductor packaging/storage/liquid cooling indices or representative leaders, sector turnover, sector stage, and whether core leaders are breaking down.
 - Trend indicators: 5/10/20/30-day moving averages, platform consolidation, relative strength, volume behavior, 20-day MA deviation, RSI, MACD, KDJ, and short-term overheat signals.
 - Fundamental evidence: latest annual/interim/quarterly report, announcements, investor relations, institution research, customer/product/capacity progress, margin/revenue/profit changes.
 - Industry-chain placement: confirm whether revenue/products truly relate to AI hardware upstream demand.
@@ -49,8 +49,14 @@ Use a layered data approach. Do not scatter across many platforms unless a layer
 1. **Market data layer - Sina first**: Use Sina Finance `Market_Center.getHQNodeData` as the default free source for A-share turnover ranking, price, change percent, turnover amount, turnover ratio, PE/PB, market cap, and quote time. Sort by `amount` descending and paginate until at least 200 valid A-share records are collected.
 2. **Quote fallback - Tencent**: Use Tencent quote APIs only as a backup for batch single-stock quotes after candidate codes are known. Tencent is useful for price/turnover checks, but is not the preferred source for full-market turnover ranking.
 3. **Library fallback**: If Sina fails, try AkShare `stock_zh_a_spot_em`, efinance `get_realtime_quotes`, then Eastmoney `push2` directly. If all fail, use a clearly labeled degraded source such as 52daban top 100.
-4. **Classification layer**: Intersect the turnover top 200 with a local AI hardware upstream watchlist when available. If no local watchlist exists, classify using the segment list in this skill and verify with company business descriptions.
+4. **Classification layer**: Intersect the turnover top 200 with a local AI hardware upstream/chip/semiconductor-equipment/storage watchlist when available. If no local watchlist exists, classify using the segment list in this skill and verify with company business descriptions.
 5. **Evidence layer**: After candidate screening, verify only A/B candidates with announcements, financial reports, investor relations, or high-quality research/news. Do not try to verify the full market one by one.
+
+Operational script:
+
+- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, and writes only the final dated Markdown report.
+- Use `generate_report.py` only when curated `data/meta.json` and `data/candidates.csv` already exist from another trusted workflow.
+- If an external K-line source is slow, prefer Sina `CN_MarketDataService.getKLineData` for lightweight MA/RSI/MACD/KDJ calculation before trying heavier fallback APIs.
 
 Completeness checks:
 
@@ -76,16 +82,19 @@ Prioritize upstream or semi-upstream AI hardware segments:
 - High-speed connectors, copper cable, backplane interconnect.
 - Liquid cooling, thermal management, cold plates, CDU.
 - AI power supply, power modules, power management.
-- Storage interface, high-speed interface chips, interconnect chips.
+- AI chips, domestic compute chips, storage chips, controller chips, storage interface chips, high-speed interface chips, interconnect chips.
+- Semiconductor equipment, including etch, deposition, cleaning, metrology/inspection, lithography-adjacent equipment, bonding, testing, and packaging equipment.
+- Storage, including DRAM, NAND, HBM, enterprise SSDs, storage modules, storage controllers, related packaging/testing, materials, and equipment.
 - AI compute upstream materials, components, equipment, and key processes.
 
 Industry-chain purity tiers:
 
-- **S tier**: Optical modules/devices/chips, AI PCB/high-layer boards/HDI/package substrates, advanced packaging/Chiplet/HBM testing-packaging, high-speed connectors/backplane/copper interconnect.
-- **A tier**: CCL, electronic cloth/fiberglass/resin, liquid cooling/thermal management, AI power modules, HBM/semiconductor materials with direct AI hardware demand.
-- **B tier**: Storage modules/products, broad semiconductor equipment/materials, consumer-electronics mixed logic, RF/ceramic/passive components with indirect AI hardware exposure.
+- **S tier**: Optical modules/devices/chips, AI PCB/high-layer boards/HDI/package substrates, advanced packaging/Chiplet/HBM testing-packaging, high-speed connectors/backplane/copper interconnect, AI compute chips/storage interface chips/high-speed interface chips with clear AI-server demand.
+- **A tier**: CCL, electronic cloth/fiberglass/resin, liquid cooling/thermal management, AI power modules, HBM/storage chips/enterprise SSDs, semiconductor equipment and semiconductor materials with direct AI hardware, advanced packaging, HBM, or storage-cycle demand.
+- **B tier**: Generic chips, storage modules/products, broad semiconductor equipment/materials, consumer-electronics mixed logic, RF/ceramic/passive components with indirect AI hardware exposure.
 
 Prefer S/A tier for A/B candidates. B-tier names usually cap at C unless turnover, trend, and verified fundamentals are unusually strong.
+For chips, semiconductor equipment, and storage, do not rely on sector tags alone. Require evidence that the business is tied to AI compute, AI servers, HBM/storage upcycle, advanced process, advanced packaging, domestic substitution, or high-end manufacturing demand.
 
 Do not put server OEMs, cloud platforms, compute leasing, or IDC operators into A档. Use them only as demand-chain references unless the user explicitly asks for broader coverage.
 
@@ -96,7 +105,7 @@ Try to require all of the following before a company enters the main candidate p
 | Dimension | Requirement |
 |---|---|
 | Market | A-share listing |
-| Theme | AI hardware upstream or semi-upstream |
+| Theme | AI hardware upstream or semi-upstream, including chips, semiconductor equipment, and storage with verifiable AI-hardware or semiconductor-cycle logic |
 | Market cap | Prefer RMB 50-200 billion |
 | Turnover | Must be within today's A-share turnover top 200 |
 | Price move | Avoid extremely crowded leaders or already overextended names |
@@ -197,11 +206,11 @@ Downgrade or exclude when any major risk dominates:
 1. Verify the post-close hard rule. If the run is before 15:30 China time on a trading day, stop instead of screening.
 2. Determine and record `run_time`, `trade_date`, data-source quote timestamp, skill version, stock-pool version, threshold version, and whether fallback data is used.
 3. Classify the sector stage: 主升, 分歧, 修复, or 退潮.
-4. Fetch today's A-share turnover top 200, using Sina Finance as the default source and paginating until 200 valid rows are collected.
+4. Fetch today's A-share turnover top 200, using Sina Finance as the default source and paginating until 200 valid rows are collected. In normal runs, use `scripts/run_slowbull.py` for this step.
 5. Validate that the quote timestamps match the completed `trade_date`; stop or label as degraded if stale.
 6. Use structured market data for analysis, but do not archive raw/process data in `runs/`.
-7. Intersect top 200 with the local/known AI hardware upstream universe or classify using the skill's segment list and purity tiers.
-8. Keep only AI hardware upstream or semi-upstream names.
+7. Intersect top 200 with the local/known AI hardware upstream, chip, semiconductor equipment, or storage universe, or classify using the skill's segment list and purity tiers.
+8. Keep only AI hardware upstream/semi-upstream names, or chip/semiconductor-equipment/storage names with verifiable AI-hardware, advanced process, advanced packaging, HBM/storage, or domestic-substitution logic.
 9. Remove server OEMs from A档 consideration and log excluded sector anchors separately.
 10. Check market cap against the RMB 50-200 billion preferred band and apply hard caps.
 11. Apply quantitative overheat, trend, MACD/KDJ, and platform thresholds.
@@ -209,7 +218,7 @@ Downgrade or exclude when any major risk dominates:
 13. Score the remaining names and assign A/B/C/excluded tiers.
 14. Track known AI hardware upstream names not in today's top 200 during analysis when useful, but do not archive gap/process files in `runs/`.
 15. Add buy-point observation and invalidation conditions as conditional scenarios, never as direct trading instructions.
-16. Generate the final report from structured in-memory data or temporary workspace artifacts when possible.
+16. Generate the final report from structured in-memory data or temporary workspace artifacts when possible. Prefer `scripts/run_slowbull.py`, which does not persist raw top200 or process CSV files.
 17. Save only the final dated report under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, where `YYYY-MM-DD` is the trading date.
 
 ## Scoring Model
@@ -218,12 +227,17 @@ Score out of 100:
 
 | Dimension | Weight | Guidance |
 |---|---:|---|
-| AI hardware upstream purity | 20 | Higher when closer to optical modules/chips, PCB, CCL, electronic cloth, packaging, connectors, liquid cooling, power, interface chips |
-| Turnover and fund behavior | 20 | Rank 1-100 scores highest; rank 101-200 scores next; look for sustained active turnover rather than one-day blowoff |
+| AI hardware upstream purity | 20 | Higher when closer to optical modules/chips, PCB, CCL, electronic cloth, packaging, connectors, liquid cooling, power, AI chips, storage chips, interface chips, semiconductor equipment, and storage chain, with stronger AI-hardware demand verification |
+| Turnover and fund behavior | 20 | Rank 1-100 scores highest; rank 101-200 scores next; look for sustained active turnover rather than one-day blowoff; prefer recognized front-row names in high-attention subsegments |
 | Market-cap fit | 10 | RMB 50-200 billion scores best; too small or too large loses points |
 | Moderate gains and crowding | 15 | Penalize threshold breaches, excessive MA20 deviation, RSI/MACD/KDJ overheat, and high-volume stalling |
-| Trend quality | 20 | Slow bull, strong platform, multi-MA alignment, orderly volume, resilient pullbacks, healthy MACD/KDJ confirmation |
+| Trend quality | 20 | Slow bull, strong platform, multi-MA alignment, orderly volume, resilient pullbacks, MA20 pullback stabilization, healthy MACD/KDJ confirmation |
 | Fundamental change | 15 | Earnings/order/customer/product/capacity/margin/business-mix improvement |
+
+Additional required evaluation checks:
+
+- Trend-ticket opportunity: for names already in a healthy trend, a controlled pullback toward MA20 followed by shrinking-volume stabilization, reclaiming key short MAs, or renewed volume expansion is an opportunity-style watch condition, not an automatic downgrade.
+- Front-row popularity: prefer widely recognized, high-attention front-row companies within an industry subsegment. Avoid obscure tail-end names unless their turnover, trend, and evidence are materially stronger than the recognized leaders.
 
 Technical momentum adjustment:
 
@@ -258,6 +272,7 @@ Excluded：weak upstream relevance, concept hype, poor fundamentals, weak turnov
 Discuss these only as watch conditions:
 
 - Moving-average pullback: price tests 5/10/20-day MA, does not break, volume contracts, then volume expands upward. Prefer 10-day support over 20-day support; avoid intraday chase.
+- Trend-ticket MA20 stabilization: for established trend names, a pullback close to the 20-day MA that stabilizes without a high-volume breakdown can be treated as a key observation opportunity; require confirmation from volume, close position, and sector stage.
 - Platform breakout: 5-15 trading days of sideways consolidation, mild volume expansion through platform high, close holds above breakout, and next day does not fall back into the platform.
 - Strong second-entry setup: after a large up day or limit-up, wait 3-8 trading days of shrinking-volume consolidation, no break below 10/20-day MA, then renewed volume breakout.
 - Slow-bull trend: price rises along 20/30-day MA, lows lift gradually, volume expands moderately, no repeated acceleration, resilient on sector pullbacks and quick to repair on rebounds.
@@ -292,6 +307,7 @@ Use the same report frame as `ashare-trend-buy` so both skills produce comparabl
 - 数据完整性：valid A-share row count, whether today's turnover top 200 is complete, candidate count, and any missing/lagged data.
 - 指标口径：MA/RSI/MACD/KDJ/volume/market-cap/fundamental evidence methodology.
 - 市场环境：AI硬件链阶段：主升/分歧/修复/退潮, with one-line reason.
+- 附加评估：趋势票是否回踩20日线企稳；是否属于行业细分中公认知名度高、人气高的前排。
 - 限制说明：unverified fundamentals, lagged K-lines, missing announcements, or degraded data source.
 - 展示上限：each tier shows at most 5 names; if a tier has more than 5 candidates, show the highest-priority 5 in the final report.
 
@@ -370,7 +386,7 @@ When the user asks for an example prompt, provide:
 
 要求：
 1. 不要把服务器整机厂作为A档核心标的；
-2. 优先筛选光模块、光芯片、PCB、CCL、电子布、先进封装、连接器、液冷、电源、存储接口等上游方向；
+2. 优先筛选光模块、光芯片、PCB、CCL、电子布、先进封装、连接器、液冷、电源、芯片、半导体设备、存储、存储接口等上游方向；
 3. 总市值优先500亿至2000亿；
 4. 剔除涨幅过大的头部AI硬件；
 5. 优先找慢牛趋势、强势盘整、基本面良好或有巨大变化的二线品种；
@@ -384,6 +400,8 @@ When the user asks for an example prompt, provide:
 13. 当日涨幅>=9.5%、RSI>80、MA20偏离>25%、市值>3000亿时执行硬降级或剔除；
 14. 区分财报验证、公告/调研验证、互动平台弱验证和无验证；
 15. 将MACD/KDJ金叉死叉作为技术动量加减分项，不作为单独买卖依据；
-16. 输出最终短名单，并说明哪些适合等回踩，哪些只适合观察，以及观察失效条件；
-17. 执行完成后，只在 runs/ashare-ai-slowbull/YYYY-MM-DD/ 下保存 YYYY-MM-DD.md，不保存 data/、scripts/ 或过程数据。
+16. 对趋势票单独评估：调整到20日均线附近并缩量企稳，是机会型观察条件；
+17. 对行业细分地位单独评估：优先选择公认知名度高、人气高的细分前排；
+18. 输出最终短名单，并说明哪些适合等回踩，哪些只适合观察，以及观察失效条件；
+19. 执行完成后，只在 runs/ashare-ai-slowbull/YYYY-MM-DD/ 下保存 YYYY-MM-DD.md，不保存 data/、scripts/ 或过程数据。
 ```

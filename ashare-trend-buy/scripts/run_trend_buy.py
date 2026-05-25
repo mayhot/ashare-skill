@@ -69,10 +69,52 @@ THEMES = {
     "002916": "PCB/封装基板",
     "600111": "稀土/材料",
     "601689": "机器人/汽车零部件",
+    "002049": "半导体/特种IC",
+    "600460": "半导体/功率IDM",
+    "002436": "PCB/封装基板",
+    "688027": "量子科技/信息安全",
+    "600498": "光通信/通信设备",
+    "002851": "电源/电控",
+    "688361": "半导体设备",
+    "603993": "有色金属/钼铜",
+    "688629": "高速连接器/AI硬件",
+    "603083": "CPO/光模块",
+    "000021": "存储/先进制造",
+    "000100": "显示面板/AI硬件",
+    "603920": "PCB/AI硬件",
+    "600673": "电子材料/电池材料",
+    "002273": "光学/消费电子",
+    "688313": "光芯片/CPO",
+    "002222": "光学晶体/激光",
+    "600601": "PCB/AI硬件",
+    "300620": "光器件/CPO",
+    "300346": "半导体材料",
 }
 
 
-MAIN_THEME_KEYS = ("PCB", "CPO", "光通信", "半导体", "存储", "AI", "服务器", "玻璃基板", "机器人", "液冷", "电池")
+MAIN_THEME_KEYS = (
+    "PCB",
+    "CPO",
+    "光通信",
+    "光模块",
+    "光器件",
+    "光芯片",
+    "半导体",
+    "存储",
+    "AI",
+    "服务器",
+    "高速连接器",
+    "玻璃基板",
+    "显示面板",
+    "机器人",
+    "液冷",
+    "电池",
+    "电源",
+    "电控",
+    "量子科技",
+)
+FRONT_ROW_AMOUNT_YI = 50
+FRONT_ROW_RANK = 80
 
 
 def fetch_json(url: str):
@@ -278,19 +320,53 @@ def infer_theme(row):
     if theme:
         return theme
     name = row["name"]
+    if any(word in name for word in ("量子", "国盾")):
+        return "量子科技/信息安全"
+    if any(word in name for word in ("电路", "PCB", "覆铜板", "生益", "沪电", "深南")):
+        return "PCB/AI硬件"
+    if any(word in name for word in ("光模块", "光迅", "剑桥", "光库", "仕佳", "中际", "新易盛")):
+        return "CPO/光模块"
+    if any(word in name for word in ("连接", "华丰", "瑞可达")):
+        return "高速连接器/AI硬件"
     if any(word in name for word in ("芯", "微", "晶", "导体", "封")):
         return "半导体"
+    if any(word in name for word in ("设备", "中科飞测", "拓荆", "北方华创", "中微")):
+        return "半导体设备"
     if any(word in name for word in ("光", "通信", "电路", "科技")):
         return "AI硬件/通信"
+    if any(word in name for word in ("液冷", "温控", "英维克")):
+        return "液冷/温控"
+    if any(word in name for word in ("机器人", "三花", "拓普")):
+        return "机器人/汽车零部件"
     if any(word in name for word in ("电池", "锂", "氟")):
         return "电池/材料"
+    if any(word in name for word in ("电源", "电控", "麦格米特")):
+        return "电源/电控"
+    if any(word in name for word in ("钼", "铜", "铝", "稀土", "洛阳")):
+        return "有色金属/资源"
     return "综合主题"
+
+
+def ma20_stabilization_state(ind):
+    dist20 = ind["dist20_pct"]
+    if -1 <= dist20 <= 5 and ind["vol_ratio"] <= 1.4 and "空头" not in ind["macd"]:
+        return "20日线强企稳"
+    if -2 <= dist20 <= 10 and ind["vol_ratio"] <= 2.2:
+        return "20日线可观察"
+    if dist20 > 18:
+        return "远离20日线不追"
+    return "20日线状态一般"
 
 
 def score_candidate(row, ind):
     close = ind["close"]
     ma5, ma10, ma20, ma60 = ind["ma5"], ind["ma10"], ind["ma20"], ind["ma60"]
     theme = infer_theme(row)
+    main_theme = any(key in theme for key in MAIN_THEME_KEYS)
+    front_row = main_theme and row["rank"] <= FRONT_ROW_RANK and row["amount_yi"] >= FRONT_ROW_AMOUNT_YI
+    trend_stock = ma20 > ma60 and ma10 >= ma20 * 0.98
+    ma20_state = ma20_stabilization_state(ind)
+    ma20_stabilizing = trend_stock and ma20_state in ("20日线强企稳", "20日线可观察") and ind["ret5_pct"] > -8
 
     trend = 0
     trend += 3 if close > ma5 else 0
@@ -304,8 +380,10 @@ def score_candidate(row, ind):
     setup = 0
     setup += 5 if breakout else 0
     setup += 4 if near_support else 0
+    setup += 2 if ma20_stabilizing else 0
     setup += 2 if ind["ret5_pct"] > -3 else 0
     setup += 2 if ind["dist20_pct"] <= 18 else 0
+    setup = min(13, setup)
 
     vr = ind["vol_ratio"]
     vol = 0
@@ -314,7 +392,7 @@ def score_candidate(row, ind):
     vol += 3 if not (row["changepercent"] < -4 and vr > 1.5) else 0
     vol += 3 if row["turnoverratio"] <= 20 else 1
 
-    theme_score = 15 if any(key in theme for key in MAIN_THEME_KEYS) else 8
+    theme_score = 15 if front_row else 13 if main_theme else 8
     support = 0
     support += 5 if close > ma20 else 1
     support += 4 if ind["dist20_pct"] <= 15 else 1
@@ -324,6 +402,8 @@ def score_candidate(row, ind):
     fundamental = 10
     if any(key in theme for key in ("半导体", "CPO", "PCB", "AI", "机器人", "储能", "玻璃基板", "液冷")):
         fundamental += 4
+    if front_row:
+        fundamental += 1
     if row["mktcap_yi"] >= 500:
         fundamental += 1
     fundamental = min(15, fundamental)
@@ -341,20 +421,28 @@ def score_candidate(row, ind):
     total = trend + setup + vol + theme_score + support + fundamental + tech + liquidity
 
     flags = []
+    severe_flags = []
     if close < ma20 and not ma5 > ma10:
         flags.append("收盘低于20日线且短均线未修复")
     if ind["dist20_pct"] > 25:
         flags.append("距20日线过远")
+        severe_flags.append("距20日线过远")
     if row["changepercent"] > 9 and ind["dist20_pct"] > 10:
         flags.append("单日大涨后未整理")
+        severe_flags.append("单日大涨后未整理")
     if row["changepercent"] < -5 and vr > 1.3:
         flags.append("放量下跌")
+        severe_flags.append("放量下跌")
     if "高位死叉" in ind["kdj"]:
         flags.append("KDJ高位死叉")
+        severe_flags.append("KDJ高位死叉")
     if "死叉" in ind["macd"] and close < ma20:
         flags.append("MACD死叉叠加破位")
+        severe_flags.append("MACD死叉叠加破位")
+    if not front_row and not main_theme and row["rank"] > 120:
+        flags.append("细分前排/人气不足")
 
-    if flags and any(x in "；".join(flags) for x in ("距20日线过远", "放量下跌", "KDJ高位死叉", "单日大涨后未整理")):
+    if severe_flags:
         tier = "剔除"
     elif total >= 85 and not flags:
         tier = "A"
@@ -365,15 +453,37 @@ def score_candidate(row, ind):
     else:
         tier = "剔除"
 
+    downgrade_reasons = []
     if tier == "A" and (row["changepercent"] > 6 or ind["dist20_pct"] > 18 or row["turnoverratio"] > 18):
+        if row["changepercent"] > 6:
+            downgrade_reasons.append("短线涨幅偏大")
+        if ind["dist20_pct"] > 18:
+            downgrade_reasons.append("距20日线偏远")
+        if row["turnoverratio"] > 18:
+            downgrade_reasons.append("换手偏高")
         tier = "B"
 
     support_text = f"10日线{ma10:.2f}/20日线{ma20:.2f}；收盘跌破20日线且1-2日不能收回则降级"
     buy_watch = "观察回踩10/20日线不破后的温和放量转强"
+    if ma20_state == "20日线强企稳":
+        buy_watch = "趋势票调整至20日线强企稳，观察缩量不破后的温和放量"
+    elif ma20_state == "20日线可观察":
+        buy_watch = "趋势票接近20日线可观察，等待缩量止跌或快速收回20日线"
     if breakout:
         buy_watch = "观察突破后不快速跌回，或回踩突破位缩量企稳"
     if ind["dist20_pct"] > 18 or row["changepercent"] > 6:
         buy_watch = "不追高，等待3-8日缩量整理并靠近10/20日线"
+
+    if severe_flags:
+        tier_reason = "硬性剔除：" + "；".join(severe_flags)
+    elif downgrade_reasons:
+        tier_reason = "A档降B：" + "；".join(downgrade_reasons)
+    elif flags:
+        tier_reason = "降级观察：" + "；".join(flags)
+    elif total < 65:
+        tier_reason = "评分未达阈值"
+    else:
+        tier_reason = "无硬性风险"
 
     result = {
         **row,
@@ -399,13 +509,47 @@ def score_candidate(row, ind):
         "j": round(ind["j"], 2),
         "score": int(round(total)),
         "tier": tier,
+        "tier_reason": tier_reason,
         "support": support_text,
         "buy_watch": buy_watch,
         "flags": "；".join(flags),
-        "structure": "平台突破/前高附近" if breakout else "均线回踩附近" if near_support else "偏离均线较远" if ind["dist20_pct"] > 18 else "震荡修复",
+        "severe_flags": "；".join(severe_flags),
+        "ma20_state": ma20_state,
+        "front_row_state": "细分前排/高人气" if front_row else "主线活跃" if main_theme else "辨识度待验证",
+        "structure": "平台突破/前高附近" if breakout else ma20_state if ma20_stabilizing else "均线回踩附近" if near_support else "偏离均线较远" if ind["dist20_pct"] > 18 else "震荡修复",
         "trend_state": "多头排列" if ma5 > ma10 > ma20 and close > ma20 else "修复中" if close > ma20 else "弱势",
     }
     return result
+
+
+def enrich_relative_context(rows):
+    valid = [row for row in rows if not row.get("error")]
+    theme_groups = {}
+    for row in valid:
+        theme_groups.setdefault(row["theme"], []).append(row)
+    for theme_rows in theme_groups.values():
+        ordered = sorted(theme_rows, key=lambda row: row["amount_yi"], reverse=True)
+        count = len(ordered)
+        for index, row in enumerate(ordered, 1):
+            row["theme_rank"] = index
+            row["theme_count"] = count
+            main_theme = any(key in row["theme"] for key in MAIN_THEME_KEYS)
+            theme_front = index <= 3 and row["amount_yi"] >= 30
+            if row["front_row_state"] == "细分前排/高人气" or (main_theme and theme_front):
+                row["front_row_state"] = f"细分前排/高人气，板块成交第{index}/{count}"
+            elif main_theme:
+                row["front_row_state"] = f"主线活跃，板块成交第{index}/{count}"
+            else:
+                row["front_row_state"] = f"辨识度待验证，板块成交第{index}/{count}"
+
+
+def candidate_source_label():
+    if SOURCE_TOP200 is None:
+        return "新浪实时成交额排名"
+    try:
+        return str(SOURCE_TOP200.relative_to(ROOT))
+    except ValueError:
+        return str(SOURCE_TOP200)
 
 
 def generate_report(rows, summary):
@@ -428,8 +572,9 @@ def generate_report(rows, summary):
     theme_text = "、".join(f"{theme}({count})" for theme, count in top_themes) if top_themes else "无"
     latest_dates = summary.get("latest_kline_dates") or {}
     latest_date_text = "、".join(f"{day}:{count}只" for day, count in latest_dates.items()) if latest_dates else "无"
-    source_label = str(SOURCE_TOP200.relative_to(ROOT)) if SOURCE_TOP200 else "未指定"
+    source_label = candidate_source_label()
     missing_count = summary["candidate_count"] - summary["calculated_count"]
+    hard_removed = [r for r in x_rows if r.get("severe_flags")]
 
     lines = []
     lines.append("# A股右侧趋势买入标准筛选结果")
@@ -442,17 +587,21 @@ def generate_report(rows, summary):
     lines.append("")
     lines.append(f"- 数据来源：候选池 `{source_label}`；日K来自新浪 240 分钟日线接口；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
     lines.append(f"- 数据完整性：候选 {summary['candidate_count']} 只，完成指标计算 {summary['calculated_count']} 只，未完成 {missing_count} 只；最新K线日期分布：{latest_date_text}。")
-    lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位和右侧趋势评分。")
-    lines.append(f"- 市场环境：候选主线集中在 {theme_text}；右侧策略优先保留趋势结构完整、靠近支撑或突破后可确认的标的。")
+    lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、20日线企稳分层、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位、板块内成交前排/人气和右侧趋势评分。")
+    lines.append(f"- 市场环境：候选主线集中在 {theme_text}；右侧策略优先保留趋势结构完整、调整到20日线附近企稳、靠近支撑或突破后可确认的细分前排标的。")
+    lines.append("- 剔除解释：剔除档按原始评分展示，高分剔除通常是触发距20日线过远、单日大涨未整理、放量下跌、MACD/KDJ破位等硬性风险。")
     lines.append("- 限制说明：本脚本侧重技术结构与主线归类，基本面/公告证据只作主题逻辑提示；最终报告每个档位最多展示5只，过程数据不归档到 runs。")
     lines.append("")
     lines.append("## 一、筛选结论")
     lines.append("")
-    lines.append(f"- 市场环境：主线候选以 {theme_text} 为主，按右侧趋势结构和支撑距离排序。")
+    lines.append(f"- 市场环境：主线候选以 {theme_text} 为主，按右侧趋势结构、20日线企稳状态、细分前排/人气和支撑距离排序。")
     lines.append(f"- A档，重点观察（最多5只）：{names(display_a)}")
     lines.append(f"- B档，等待买点（最多5只）：{names(display_b)}")
     lines.append(f"- C档，只跟踪不追（最多5只）：{names(display_c)}")
     lines.append(f"- 剔除/暂不追（最多5只）：{names(display_x)}")
+    if hard_removed:
+        hard_text = "；".join(f"{r['name']}({r['severe_flags']})" for r in display_x if r.get("severe_flags"))
+        lines.append(f"- 高分剔除原因：{hard_text or '详见核心表格和逐个点评'}")
     lines.append("")
     lines.append("## 二、核心表格")
     lines.append("")
@@ -460,12 +609,14 @@ def generate_report(rows, summary):
     lines.append("|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|")
     for r in display_rows:
         macd_kdj = f"{r['macd']}；{r['kdj']}，K={r['k']}/D={r['d']}/J={r['j']}"
-        key_data = f"成交额{r['amount_yi']:.2f}亿，换手{r['turnoverratio']:.2f}%，涨跌幅{r['changepercent']:.2f}%，距20日线{r['dist20_pct']:.2f}%，K线{r['date']}"
+        key_data = f"成交额{r['amount_yi']:.2f}亿，换手{r['turnoverratio']:.2f}%，涨跌幅{r['changepercent']:.2f}%，距20日线{r['dist20_pct']:.2f}%，{r['ma20_state']}，K线{r['date']}"
         vol = f"量比{r['vol_ratio']:.2f}；成交额排名{r['rank']}"
         tech = f"{r['trend_state']}，{r['structure']}，距20日线{r['dist20_pct']:.2f}%"
-        logic = f"{r['theme']}主线；右侧结构评分优先，基本面需另行复核"
+        logic = f"{r['theme']}主线；{r['front_row_state']}；{r['tier_reason']}；基本面需另行复核"
+        score_text = f"{r['score']}（原始）" if r["tier"] == "剔除" and r.get("severe_flags") else str(r["score"])
+        buy_watch_text = f"暂不观察；{r['tier_reason']}" if r["tier"] == "剔除" and r.get("severe_flags") else r["buy_watch"]
         lines.append(
-            f"| {r['tier']} | {r['rank']} | {r['name']} | {r['code']} | {r['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {r['support']} | {r['score']} | {r['buy_watch']} |"
+            f"| {r['tier']} | {r['rank']} | {r['name']} | {r['code']} | {r['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {r['support']} | {score_text} | {buy_watch_text} |"
         )
     lines.append("")
     lines.append("## 三、逐个点评")
@@ -476,8 +627,8 @@ def generate_report(rows, summary):
             f"{r['name']}：方向/主线为{r['theme']}，成交额排名{r['rank']}、成交额{r['amount_yi']:.2f}亿、"
             f"换手{r['turnoverratio']:.2f}%、距20日线{r['dist20_pct']:.2f}%。趋势结构是{r['trend_state']}、{r['structure']}；"
             f"MACD/KDJ为{r['macd']}、{r['kdj']}，只作辅助确认。量价/资金看量比{r['vol_ratio']:.2f}。"
-            f"证据/逻辑为{r['theme']}主线，基本面需结合公告和财报复核。买点观察是{r['buy_watch']}；"
-            f"支撑/失效看{r['support']}。主要风险：{risk}。"
+            f"证据/逻辑为{r['theme']}主线、{r['front_row_state']}，基本面需结合公告和财报复核。买点观察是{r['buy_watch']}；"
+            f"支撑/失效看{r['support']}。档位原因：{r['tier_reason']}。主要风险：{risk}。"
         )
         lines.append("")
     lines.append("## 四、最终短名单")
@@ -491,8 +642,9 @@ def generate_report(rows, summary):
     lines.append("")
     lines.append("## 五、买点观察与失效条件")
     lines.append("")
-    lines.append("- A/B档共同纪律：不把MACD/KDJ单独作为买点，必须结合趋势结构、量价和支撑距离。")
+    lines.append("- A/B档共同纪律：不把MACD/KDJ单独作为买点，必须结合趋势结构、量价、20日线企稳状态、支撑距离和细分前排/人气。")
     lines.append("- 均线回踩：优先观察回踩10日/20日线不破，缩量企稳后温和放量转强。")
+    lines.append("- 20日线企稳：趋势票调整到或接近20日均线，缩量止跌、收盘不破或1-2日快速收回后再评估。")
     lines.append("- 平台突破：观察突破后不快速跌回平台，或回踩突破位缩量企稳。")
     lines.append("- 强势二买：大阳线后等待3-8日缩量整理，不破10日/20日线再评估。")
     lines.append("- 统一失效：收盘跌破20日线且1-2日不能收回、放量破平台、KDJ高位死叉叠加价格走弱、主线板块放量破位。")
@@ -557,12 +709,13 @@ def main():
     calculated = [r for r in results if not r.get("error")]
     summary = {
         "screening_date": SCREENING_DATE,
-        "source_top200": str(SOURCE_TOP200.relative_to(ROOT)) if SOURCE_TOP200 is not None else "Sina live ranking",
+        "source_top200": candidate_source_label(),
         "candidate_count": len(candidates),
         "calculated_count": len(calculated),
         "latest_kline_dates": dict(Counter(r["date"] for r in calculated)),
         "tier_counts": dict(Counter(r["tier"] for r in calculated)),
     }
+    enrich_relative_context(results)
     report = generate_report(results, summary)
     (RUN_DIR / f"{SCREENING_DATE}.md").write_text(report, encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))

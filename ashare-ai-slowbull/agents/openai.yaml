@@ -1,4 +1,4 @@
 interface:
   display_name: "A股AI硬件上游慢牛筛选"
   short_description: "收盘后从成交额前200筛选A股AI硬件上游二线慢牛观察标的"
-  default_prompt: "Use $ashare-ai-slowbull 在A股收盘后，从今日A股成交金额前200名中筛选AI硬件上游二线慢牛观察标的，明确run_time、trade_date、quote_ticktime、数据源和收盘后校验结果，按统一报告格式输出数据说明、A/B/C分档、核心表格、逐个点评、短名单、买点观察、失效条件和风险提示；每个档位最多展示5只，并保留AI硬件上游、二线补涨、市值区间、纯度分层、硬降级和证据等级判断；只将最终结果保存到 runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md，不保留过程数据。"
+  default_prompt: "Use $ashare-ai-slowbull 在A股收盘后，从今日A股成交金额前200名中筛选AI硬件上游二线慢牛观察标的，筛选范围包含光模块、PCB、先进封装、连接器、液冷、电源、芯片、半导体设备、存储和存储接口等方向；明确run_time、trade_date、quote_ticktime、数据源和收盘后校验结果，按统一报告格式输出数据说明、A/B/C分档、核心表格、逐个点评、短名单、买点观察、失效条件和风险提示；每个档位最多展示5只，并保留AI硬件上游、二线补涨、市值区间、纯度分层、硬降级、证据等级、趋势票回踩20日线企稳机会、以及行业细分前排知名度和人气判断；只将最终结果保存到 runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md，不保留过程数据。"
