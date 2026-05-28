@@ -1,4 +1,4 @@
-"""Run the ashare-ai-slowbull post-close screen and write the final report only.
+"""Run the ashare-ai-slowbull post-close screen and write the final report.
 
 The script intentionally keeps raw market data in memory. The only persisted
 artifact is runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md.
@@ -290,6 +290,7 @@ def score(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
 
 
 def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
+    rank = int(row["rank"])
     change = to_float(row.get("changepercent"))
     market_cap_yi = to_float(row.get("mktcap")) / 10000
     dev20 = float(ind.get("dev20", 0)) if has_indicators(ind) else None
@@ -305,6 +306,8 @@ def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
         return "B" if numeric_score >= 78 else "C"
     if market_cap_yi < 500:
         return "C" if numeric_score >= 70 else "剔除"
+    if rank > 100 and numeric_score < 97:
+        return "B" if numeric_score >= 75 else "C"
     return "A" if numeric_score >= 85 else "B" if numeric_score >= 75 else "C" if numeric_score >= 65 else "剔除"
 
 
@@ -349,6 +352,53 @@ def support_text(ind: dict[str, Any]) -> str:
     return f"20日线约{float(ind['ma20']):.2f}；跌破后2-3日不能收回则降级"
 
 
+def risk_flags(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    rank = int(row["rank"])
+    change = to_float(row.get("changepercent"))
+    market_cap_yi = to_float(row.get("mktcap")) / 10000
+    if rank > 100:
+        flags.append("成交额排名偏后")
+    if market_cap_yi > 2000:
+        flags.append("市值偏大")
+    if change >= 9.5:
+        flags.append("当日涨幅过热")
+    if segment.front_row < 5:
+        flags.append("细分前排确认度需复核")
+    if has_indicators(ind):
+        dev20 = float(ind["dev20"])
+        rsi_value = float(ind["rsi"])
+        if dev20 > 15:
+            flags.append("MA20偏离较大")
+        if rsi_value > 75:
+            flags.append("RSI偏热")
+        if float(ind["dif"]) <= float(ind["dea"]):
+            flags.append("MACD偏弱")
+    return flags
+
+
+def validation_hypothesis(item: dict[str, Any]) -> str:
+    grade_name = item["grade"]
+    ind = item["indicators"]
+    flags = risk_flags(item["row"], item["segment"], ind)
+    if grade_name == "A":
+        if has_indicators(ind) and float(ind["dev20"]) <= 5:
+            return "次日应强于同细分均值；若跌破20日线或放量收弱，降级复盘"
+        return "次日验证回踩承接；若不能重新靠近短均线转强，降为B档"
+    if grade_name == "B":
+        return "只验证买点，不追高；若缩量企稳并重回短均线才升级观察"
+    if grade_name == "C":
+        return "仅跟踪强弱；除非放量收复20日线且细分转强，否则不升级"
+    if "市值偏大" in flags or int(item["row"]["rank"]) <= 10:
+        return "板块温度计；看龙头是否续强扩散，不按二线慢牛买点处理"
+    return "剔除原因复核；只有过热消化或基本面证据增强后再回池"
+
+
+def flags_text(item: dict[str, Any]) -> str:
+    flags = risk_flags(item["row"], item["segment"], item["indicators"])
+    return "、".join(flags) if flags else "无明显硬伤"
+
+
 def fmt_yi(value: Any) -> str:
     return f"{to_float(value) / 10000:.0f}亿"
 
@@ -364,6 +414,15 @@ def fmt_pct(value: Any) -> str:
 def names(candidates: list[dict[str, Any]], grade_name: str, limit: int = 5) -> str:
     selected = [item["row"]["name"] for item in candidates if item["grade"] == grade_name]
     return "、".join(selected[:limit]) if selected else "无"
+
+
+def thermometer(candidates: list[dict[str, Any]], limit: int = 8) -> str:
+    anchors = [item for item in candidates if item["grade"] == "剔除"][:limit]
+    if not anchors:
+        return "无"
+    return "、".join(
+        f"{item['row']['name']}({fmt_pct(item['row'].get('changepercent'))})" for item in anchors
+    )
 
 
 def build_report(
@@ -385,9 +444,9 @@ def build_report(
         "结果类型：研究观察池，不是最终买入名单",
         f"run_time：{run_time}",
         f"quote_ticktime：{quote_ticktime}",
-        "skill_version：ashare-ai-slowbull-postclose-v2+run_slowbull",
+        "skill_version：ashare-ai-slowbull-postclose-v3+run_slowbull",
         "stock_pool_version：frontrow-ai-hardware-chip-equipment-storage-v1",
-        "threshold_version：postclose-hardcap-v1+ma20-frontrow",
+        "threshold_version：postclose-hardcap-v2+ma20-frontrow+nextday-validation",
         "fallback_used：False",
         "post_close_validated：True",
         "",
@@ -405,10 +464,11 @@ def build_report(
         f"- B档，等待买点：{names(candidates, 'B')}",
         f"- C档，只跟踪不追：{names(candidates, 'C')}",
         f"- 剔除/板块锚：{names(candidates, '剔除', 8)}",
+        f"- 板块温度计：{thermometer(candidates)}；用于判断主线升温或退潮，不等同于二线慢牛买点。",
         "",
         "## 二、核心表格",
-        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 买点观察 |",
-        "|---|---:|---|---:|---|---|---|---|---|---|---:|---|",
+        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 扣分/风险 | 支撑/失效 | 评分 | 买点观察 | 次日验证假设 |",
+        "|---|---:|---|---:|---|---|---|---|---|---|---:|---|---|",
     ]
 
     for item in display:
@@ -422,7 +482,7 @@ def build_report(
             f"| {item['grade']} | {row['rank']} | {row['name']} | {row['code']} | "
             f"{segment.direction} | 市值{fmt_yi(row.get('mktcap'))}；成交额第{row['rank']}；涨跌幅{fmt_pct(row.get('changepercent'))} | "
             f"{tech_summary(ind)} | 成交额{fmt_amount(row.get('amount'))}；细分前排人气{segment.front_row}/5 | "
-            f"{evidence} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} |"
+            f"{flags_text(item)}；{evidence} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} | {validation_hypothesis(item)} |"
         )
 
     detail_items = [item for item in candidates if item["grade"] == "A"][:5]
@@ -437,7 +497,8 @@ def build_report(
             f"- **{row['name']}（{row['code']}，{item['grade']}档）**：{segment.direction}。"
             f"成交额第{row['rank']}、{fmt_amount(row.get('amount'))}，市值约{fmt_yi(row.get('mktcap'))}，涨跌幅{fmt_pct(row.get('changepercent'))}。"
             f"{tech_summary(ind)}。前排/人气评分 {segment.front_row}/5。"
-            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
+            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}。"
+            f"次日验证：{validation_hypothesis(item)}。扣分点：{flags_text(item)}。"
         )
 
     lines.extend(
@@ -451,14 +512,21 @@ def build_report(
             f"剔除但跟踪板块强度：{names(candidates, '剔除', 8)}",
             "```",
             "",
-            "## 五、买点观察与失效条件",
+            "## 五、板块温度计与次日验证",
+            "- 剔除/板块锚不是看空名单，而是用来观察主线温度。若板块锚继续放量走强但A/B档走弱，说明资金仍集中在龙头，二线扩散失败；若板块锚休整而A档抗跌或转强，说明补涨扩散更健康。",
+            "- 次日验证优先看三件事：A档平均表现是否显著强于B/C档；A档是否跑赢主要指数和同细分方向；最大拖累是否来自同一细分或共同风险因子。",
+            "- 复盘时必须记录分组平均涨跌幅、胜率、最大赢家、最大拖累、指数参照和规则调权建议。可用 `scripts/validate_slowbull.py --report runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md` 自动生成验证摘要。",
+            "",
+            "## 六、买点观察与失效条件",
             "- 趋势票机会：已经形成趋势的票，若回踩20日均线附近并缩量企稳、重新收回短均线或温和放量转强，才进入重点观察；不把单日大涨本身当作买点。",
+            "- A档纪律：A档只是研究优先级；若次日不能强于同细分、不能守住20日线或出现放量收弱，必须降级复盘。",
+            "- B档纪律：B档只验证买点，不追高；只有缩量企稳、站回短均线或细分同步转强，才允许升级。",
             "- 前排优先：同一细分方向优先看公认知名度高、人气高、成交额持续靠前的前排；冷门后排只有在趋势和证据显著更强时才提高优先级。",
             "- 平台突破：横盘5-15个交易日后温和放量突破，并且次日不跌回平台。",
             "- 强势二买：大阳线后3-8日缩量整理，不破10日/20日线，再次放量转强。",
             "- 统一失效：跌破20日线且2-3日无法收回；高位放量滞涨；MACD/KDJ高位死叉与价格走弱共振；半导体/AI硬件核心前排集体破位。",
             "",
-            "## 六、数据限制与风险提示",
+            "## 七、数据限制与风险提示",
             "本报告是研究观察池，不构成个性化投资建议。若后续高位前排放量滞涨、核心龙头跌破20日线或成交额快速退潮，A/B档都需要重新降级复核。",
         ]
     )
