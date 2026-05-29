@@ -429,6 +429,36 @@ def buy_observation(ind: dict[str, Any]) -> str:
     return "等待回踩或平台确认"
 
 
+def position_ratio(item: dict[str, Any]) -> str:
+    """Research sizing guardrail for each displayed candidate."""
+    grade_name = item["grade"]
+    if grade_name == "剔除":
+        return "0%"
+    row = item["row"]
+    ind = item["indicators"]
+    score = int(item["score"])
+    change = to_float(row.get("changepercent"))
+    dev20 = float(ind.get("dev20", 0)) if has_indicators(ind) else 0.0
+    rsi_value = float(ind.get("rsi", 0)) if has_indicators(ind) else 0.0
+
+    overheated = change >= 7.0 or dev20 > 15 or rsi_value > 75
+    near_ma20 = has_indicators(ind) and -3 <= dev20 <= 8
+
+    if grade_name == "A":
+        if score >= 95 and near_ma20 and not overheated:
+            return "4%-5%"
+        if score >= 90 and not overheated:
+            return "3%-4%"
+        return "2%-3%"
+    if grade_name == "B":
+        if score >= 85 and near_ma20 and not overheated:
+            return "2%-3%"
+        return "1%-2%"
+    if grade_name == "C":
+        return "0%-1%"
+    return "0%"
+
+
 def support_text(ind: dict[str, Any]) -> str:
     if not has_indicators(ind):
         return "跌破关键均线降级"
@@ -506,8 +536,8 @@ def build_report(
         f"- 剔除/板块锚：{names(candidates, '剔除', 8)}",
         "",
         "## 二、核心表格",
-        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 回测因子 | 支撑/失效 | 评分 | 买点观察 |",
-        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|",
+        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 回测因子 | 支撑/失效 | 评分 | 参考仓位 | 买点观察 |",
+        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---:|---|",
     ]
 
     for item in display:
@@ -521,7 +551,7 @@ def build_report(
             f"| {item['grade']} | {row['rank']} | {row['name']} | {row['code']} | "
             f"{segment.direction} | 市值{fmt_yi(row.get('mktcap'))}；成交额第{row['rank']}；涨跌幅{fmt_pct(row.get('changepercent'))} | "
             f"{tech_summary(ind)} | 成交额{fmt_amount(row.get('amount'))}；细分前排人气{segment.front_row}/5 | "
-            f"{evidence} | {backtest_profile_text(row, segment, ind)} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} |"
+            f"{evidence} | {backtest_profile_text(row, segment, ind)} | {support_text(ind)} | {item['score']} | {position_ratio(item)} | {buy_observation(ind)} |"
         )
 
     detail_items = [item for item in candidates if item["grade"] == "A"][:5]
@@ -537,7 +567,7 @@ def build_report(
             f"成交额第{row['rank']}、{fmt_amount(row.get('amount'))}，市值约{fmt_yi(row.get('mktcap'))}，涨跌幅{fmt_pct(row.get('changepercent'))}。"
             f"{tech_summary(ind)}。前排/人气评分 {segment.front_row}/5。"
             f"{backtest_profile_text(row, segment, ind)}。"
-            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
+            f"参考仓位：{position_ratio(item)}。买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
         )
 
     lines.extend(
@@ -554,6 +584,7 @@ def build_report(
             "## 五、买点观察与失效条件",
             "- 趋势票机会：已经形成趋势的票，若回踩20日均线附近并缩量企稳、重新收回短均线或温和放量转强，才进入重点观察；不把单日大涨本身当作买点。",
             "- 回测调权：先进封测、AI PCB、CCL/覆铜板、电子布/玻纤布在本轮验证中胜率更高；液冷、独立CPO光源、薄膜沉积设备、单日涨幅过热的存储芯片需降低档位或只等二次确认。",
+            "- 仓位纪律：参考仓位为研究型单票观察比例；A档通常不超过5%，B档通常不超过3%，C档最多跟踪仓，剔除为0%；若次日验证走弱或跌破失效位，应按规则降档或降仓。",
             "- A档纪律：A档必须满足市值500-2000亿、成交额前100、非涨停/非极端过热、非低胜率高波动形态；否则即使分数高也放入B档等待买点。",
             "- 前排优先：同一细分方向优先看公认知名度高、人气高、成交额持续靠前的前排；冷门后排只有在趋势和证据显著更强时才提高优先级。",
             "- 平台突破：横盘5-15个交易日后温和放量突破，并且次日不跌回平台。",

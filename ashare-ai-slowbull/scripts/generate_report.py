@@ -33,6 +33,33 @@ def fmt_pct(value):
         return str(value)
 
 
+def position_ratio(row):
+    grade = row.get("grade", "")
+    if grade in {"剔除", "EX"}:
+        return "0%"
+    try:
+        score = float(row.get("score") or 0)
+    except Exception:
+        score = 0
+    try:
+        change = float(row.get("changepercent") or 0)
+    except Exception:
+        change = 0
+
+    overheated = change >= 7.0
+    if grade == "A":
+        if score >= 95 and not overheated:
+            return "4%-5%"
+        if score >= 90 and not overheated:
+            return "3%-4%"
+        return "2%-3%"
+    if grade == "B":
+        return "2%-3%" if score >= 85 and not overheated else "1%-2%"
+    if grade == "C":
+        return "0%-1%"
+    return "0%"
+
+
 def names(rows, grade, limit=None):
     items = [row["name"] for row in rows if row.get("grade") == grade]
     if limit:
@@ -85,8 +112,8 @@ def main():
         f"- 剔除/暂不追：{names(candidates, '剔除', 20)}",
         "",
         "## 二、核心表格",
-        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 买点观察 |",
-        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|",
+        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 参考仓位 | 买点观察 |",
+        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---:|---|",
     ]
 
     for row in candidates:
@@ -100,7 +127,7 @@ def main():
         invalid = "跌破20日线且2-3日无法收回则降级"
         observation = "等待回踩或平台确认"
         lines.append(
-            "| {grade} | {rank} | {name} | {code} | {direction} | {key} | {tech} | {tech} | {funds} | {evidence} | {invalid} | {score} | {observation} |".format(
+            "| {grade} | {rank} | {name} | {code} | {direction} | {key} | {tech} | {tech} | {funds} | {evidence} | {invalid} | {score} | {position} | {observation} |".format(
                 grade=row.get("grade", ""),
                 rank=row.get("rank", ""),
                 name=row.get("name", ""),
@@ -112,6 +139,7 @@ def main():
                 evidence=row.get("evidence", "需核验"),
                 invalid=invalid,
                 score=row.get("score", ""),
+                position=position_ratio(row),
                 observation=observation,
             )
         )
@@ -132,6 +160,7 @@ def main():
             "",
             "## 五、买点观察与失效条件",
             "- A/B档共同纪律：不追单日大涨或涨停，优先等回踩10日/20日线缩量企稳。",
+            "- 仓位纪律：参考仓位为研究型单票观察比例；A档通常不超过5%，B档通常不超过3%，C档最多跟踪仓，剔除为0%；若次日验证走弱或跌破失效位，应按规则降档或降仓。",
             "- 平台突破：横盘5-15个交易日后温和放量突破，并且次日不跌回平台。",
             "- 强势二买：大阳线后3-8日缩量整理，不破10日/20日线，再次放量转强。",
             "- 统一失效：跌破20日线且2-3日无法收回；高位放量滞涨；MACD/KDJ高位死叉与价格走弱共振；AI硬件核心龙头集体破位。",

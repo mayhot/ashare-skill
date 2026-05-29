@@ -162,7 +162,8 @@ def calc_result(rec: Recommendation, klines: list[dict[str, Any]]) -> dict[str, 
         return {
             **rec.__dict__,
             "calc_date": rec.folder_date,
-            "reco_day_pct": None,
+            "next_day_pct": None,
+            "next_day_date": "",
             "five_day_pct": None,
             "five_day_date": "",
             "to_date_pct": None,
@@ -174,21 +175,23 @@ def calc_result(rec: Recommendation, klines: list[dict[str, Any]]) -> dict[str, 
 
     idx = dates.index(rec.folder_date)
     rec_close = float(klines[idx]["close"])
-    prev_close = float(klines[idx - 1]["close"]) if idx > 0 else None
     latest = klines[-1]
+    next_day = klines[idx + 1] if idx + 1 < len(klines) else None
     five = klines[idx + 5] if idx + 5 < len(klines) else None
+    has_forward_data = next_day is not None
 
     return {
         **rec.__dict__,
         "calc_date": rec.folder_date,
-        "reco_day_pct": pct(rec_close, prev_close) if prev_close else None,
+        "next_day_pct": pct(float(next_day["close"]), rec_close) if next_day else None,
+        "next_day_date": str(next_day["date"]) if next_day else "不足1个后续交易日",
         "five_day_pct": pct(float(five["close"]), rec_close) if five else None,
-        "five_day_date": str(five["date"]) if five else "不足5个交易日",
-        "to_date_pct": pct(float(latest["close"]), rec_close),
+        "five_day_date": str(five["date"]) if five else "不足5个后续交易日",
+        "to_date_pct": pct(float(latest["close"]), rec_close) if has_forward_data else None,
         "latest_date": str(latest["date"]),
         "rec_close": rec_close,
         "latest_close": float(latest["close"]),
-        "status": "ok",
+        "status": "ok" if has_forward_data else "pending next trading day kline",
     }
 
 
@@ -222,7 +225,7 @@ def grade_summary(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
             {
                 "grade": grade,
                 "count": len(rows_for_grade),
-                "reco_day_avg": avg([row["reco_day_pct"] for row in rows_for_grade]),
+                "next_day_avg": avg([row["next_day_pct"] for row in rows_for_grade]),
                 "five_day_avg": avg([row["five_day_pct"] for row in rows_for_grade]),
                 "to_date_avg": avg([row["to_date_pct"] for row in rows_for_grade]),
                 "to_date_win_rate": win_rate([row["to_date_pct"] for row in rows_for_grade]),
@@ -233,27 +236,28 @@ def grade_summary(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def markdown_table(results: list[dict[str, Any]]) -> list[str]:
     lines = [
-        "| 日期 | 档位 | 排名 | 标的 | 代码 | 方向 | 推荐当日 | 5日 | 5日日期 | 至今 | 最新日期 | 状态 |",
-        "|---|---|---:|---|---:|---|---:|---:|---|---:|---|---|",
+        "| 日期 | 档位 | 排名 | 标的 | 代码 | 方向 | 次日 | 次日日期 | 5日 | 5日日期 | 至今 | 最新日期 | 状态 |",
+        "|---|---|---:|---|---:|---|---:|---|---:|---|---:|---|---|",
     ]
     for row in results:
         lines.append(
             "| "
             f"{row['folder_date']} | {row['grade']} | {row['rank']} | {row['name']} | {row['code']} | "
-            f"{row['direction']} | {fmt_pct(row['reco_day_pct'])} | {fmt_pct(row['five_day_pct'])} | "
-            f"{row['five_day_date']} | {fmt_pct(row['to_date_pct'])} | {row['latest_date']} | {row['status']} |"
+            f"{row['direction']} | {fmt_pct(row['next_day_pct'])} | {row['next_day_date']} | "
+            f"{fmt_pct(row['five_day_pct'])} | {row['five_day_date']} | {fmt_pct(row['to_date_pct'])} | "
+            f"{row['latest_date']} | {row['status']} |"
         )
     return lines
 
 
 def summary_lines(results: list[dict[str, Any]]) -> list[str]:
     lines = [
-        "| 档位 | 样本数 | 推荐当日均值 | 5日均值 | 至今均值 | 至今胜率 |",
+        "| 档位 | 样本数 | 次日均值 | 5日均值 | 至今均值 | 至今胜率 |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for row in grade_summary(results):
         lines.append(
-            f"| {row['grade']} | {row['count']} | {fmt_pct(row['reco_day_avg'])} | "
+            f"| {row['grade']} | {row['count']} | {fmt_pct(row['next_day_avg'])} | "
             f"{fmt_pct(row['five_day_avg'])} | {fmt_pct(row['to_date_avg'])} | {row['to_date_win_rate']} |"
         )
     return lines
@@ -269,7 +273,8 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
         "name",
         "code",
         "direction",
-        "reco_day_pct",
+        "next_day_pct",
+        "next_day_date",
         "five_day_pct",
         "five_day_date",
         "to_date_pct",
@@ -297,7 +302,7 @@ def build_summary_report(selected_dates: list[str], results: list[dict[str, Any]
         "",
         f"生成时间：{generated_at}  ",
         f"回测范围：最近 {len(selected_dates)} 个推荐日期  ",
-        "数据口径：推荐当日涨跌幅=推荐日收盘价/前一交易日收盘价-1；5日涨跌幅=推荐后第5个交易日收盘价/推荐日收盘价-1；至今涨跌幅=最新日K收盘价/推荐日收盘价-1。",
+        "数据口径：所有收益和胜率均从推荐次日及之后的实际日K计算；次日涨跌幅=推荐后第1个交易日收盘价/推荐日收盘价-1；5日涨跌幅=推荐后第5个交易日收盘价/推荐日收盘价-1；至今涨跌幅=最新可用后续日K收盘价/推荐日收盘价-1；没有后续交易日的样本不计入收益和胜率。",
         "",
         "## 分档表现",
         "",
