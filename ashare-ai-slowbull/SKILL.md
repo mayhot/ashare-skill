@@ -54,7 +54,9 @@ Use a layered data approach. Do not scatter across many platforms unless a layer
 
 Operational script:
 
-- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, and writes only the final dated Markdown report.
+- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, writes the final dated Markdown report, then refreshes rolling `backtest_report` files for the previous 10 recommendation dates.
+- The built-in final backtest step uses `scripts/backtest_slowbull.py`, reads prior dated reports under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, writes per-date reports as `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD-backtest_report.md`, and writes aggregate reports under `runs/ashare-ai-slowbull/backtest_reports/` as `START_END_slowbull_backtest_report.md` plus `.csv`.
+- Use `scripts/backtest_slowbull.py --root runs/ashare-ai-slowbull --end-date YYYY-MM-DD --lookback 10` only when regenerating the rolling backtest independently.
 - Use `generate_report.py` only when curated `data/meta.json` and `data/candidates.csv` already exist from another trusted workflow.
 - If an external K-line source is slow, prefer Sina `CN_MarketDataService.getKLineData` for lightweight MA/RSI/MACD/KDJ calculation before trying heavier fallback APIs.
 
@@ -218,9 +220,10 @@ Downgrade or exclude when any major risk dominates:
 13. Score the remaining names and assign A/B/C/excluded tiers.
 14. Track known AI hardware upstream names not in today's top 200 during analysis when useful, but do not archive gap/process files in `runs/`.
 15. Add buy-point observation and invalidation conditions as conditional scenarios, never as direct trading instructions.
-16. Apply the backtest-informed win-rate filter from the 2026-05-20 to 2026-05-27 backtest report before final tiering.
+16. Apply the backtest-informed win-rate filter before final tiering, using the standing 2026-05-20 to 2026-05-27 lessons plus the latest rolling `backtest_report` when available.
 17. Generate the final report from structured in-memory data or temporary workspace artifacts when possible. Prefer `scripts/run_slowbull.py`, which does not persist raw top200 or process CSV files.
-18. Save only the final dated report under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, where `YYYY-MM-DD` is the trading date.
+18. Save the final dated report under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, where `YYYY-MM-DD` is the trading date.
+19. As the final step, backtest the previous 10 available recommendation dates, excluding the current `trade_date`, and generate `backtest_report` outputs using the same naming/location convention as prior回测: per-date files in each date directory and aggregate Markdown/CSV files under `runs/ashare-ai-slowbull/backtest_reports/`.
 
 ## Backtest-Informed Win-Rate Filter
 
@@ -239,6 +242,7 @@ Use these rules after the normal score:
 - Downgrade high-volatility profiles: standalone CPO light-source names, liquid cooling/temperature-control names, thin-film deposition equipment, and overheated storage chips unless fresh evidence is unusually strong.
 - Rank 101-150 candidates require extra evidence and usually cap at B/C unless they are in a validated high-win-rate material/PCB/packaging subsegment.
 - A single high score cannot override the filter; if the backtest profile is weak, keep the name in B档 waiting for confirmation or C档 tracking.
+- After each normal run, read the newly generated rolling `backtest_report` and update future judgment only when a pattern persists across multiple dates; do not overfit one isolated trading day.
 
 ## Scoring Model
 

@@ -1,14 +1,17 @@
-"""Run the ashare-ai-slowbull post-close screen and write the final report.
+"""Run the ashare-ai-slowbull post-close screen and write reports.
 
-The script intentionally keeps raw market data in memory. The only persisted
-artifact is runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md.
+The script intentionally keeps raw market data in memory. It persists the final
+dated report and then refreshes rolling backtest_report artifacts for the
+previous recommendation dates.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -99,6 +102,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", help="Trading date, default: China local date.")
     parser.add_argument("--output-root", default="runs/ashare-ai-slowbull")
     parser.add_argument("--skip-post-close-check", action="store_true")
+    parser.add_argument("--skip-backtest-report", action="store_true")
     return parser.parse_args()
 
 
@@ -563,6 +567,17 @@ def build_report(
     return "\n".join(lines) + "\n"
 
 
+def run_rolling_backtest_report(output_root: str, trade_date: str) -> list[Path]:
+    script_path = Path(__file__).with_name("backtest_slowbull.py")
+    spec = importlib.util.spec_from_file_location("backtest_slowbull", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load backtest script: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.generate_backtest_reports(Path(output_root), end_date=trade_date, lookback=10)
+
+
 def main() -> None:
     args = parse_args()
     now = datetime.now(CN_TZ)
@@ -617,6 +632,9 @@ def main() -> None:
         encoding="utf-8",
     )
     print(out_path)
+    if not args.skip_backtest_report:
+        for path in run_rolling_backtest_report(args.output_root, trade_date):
+            print(path)
 
 
 if __name__ == "__main__":
