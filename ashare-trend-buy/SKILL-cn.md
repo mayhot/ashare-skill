@@ -161,6 +161,7 @@ A 档额外门槛：单日涨幅不超过约 4%，距20日线不超过约 12%，
 11. 打分并分为 A/B/C/剔除。
 12. 输出候选表、逐个点评、最终短名单、风险提示。
 13. 将本次运行的最终报告保存到 `runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md`；过程数据只临时使用，不归档到 `runs/`。
+14. 最后一步必须回测向前 10 天已有推荐结果，生成回测报告和明细 CSV，保存到 `runs/ashare-trend-buy/backtests/`；若历史报告不足 10 天，按实际可用报告回测并说明样本数。
 
 ## 输出格式
 
@@ -253,5 +254,14 @@ runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md
 ```
 
 `YYYY-MM-DD.md` 保存最终展示给用户的报告。`runs/` 只保留每天的计算结果，不保留 `data/`、`scripts/`、原始接口响应、标准化候选池、指标 JSON 或评分中间表。
+
+每次执行还必须生成最近 10 天推荐回测：
+
+```text
+runs/ashare-trend-buy/backtests/YYYY-MM-DD_trend_buy_START_to_END_backtest_report.md
+runs/ashare-trend-buy/backtests/YYYY-MM-DD_trend_buy_START_to_END_backtest_report.csv
+```
+
+回测口径必须包含推荐当日、5 个交易日、至今涨跌幅。该回测报告属于结果报告，可以保存在 `runs/ashare-trend-buy/backtests/`；原始行情和中间 K 线仍不得归档。
 
 若同日目录已存在，只有在新结果用于替换旧结果时才覆盖；否则询问用户是否覆盖，或另存为 `YYYY-MM-DD/HHmmss/` 时间戳子目录。

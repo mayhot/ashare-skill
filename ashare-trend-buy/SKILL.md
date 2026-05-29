@@ -22,14 +22,18 @@ python ashare-trend-buy/scripts/run_trend_buy.py --date YYYY-MM-DD
 - `--top200 PATH`：复用用户提供、已核验的同日成交额前 200 CSV。
 - `--runs-dir runs`：输出根目录。
 - `--no-network`：禁用网络；仅在本地候选池和 K 线可用时使用。
+- `--backtest-lookback-days 10`：筛选完成后，默认回测向前 10 天已有推荐报告。
+- `--skip-backtest`：仅在用户明确要求不回测时使用。
 
 脚本必须保存：
 
 ```text
 runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md
+runs/ashare-trend-buy/backtests/YYYY-MM-DD_trend_buy_START_to_END_backtest_report.md
+runs/ashare-trend-buy/backtests/YYYY-MM-DD_trend_buy_START_to_END_backtest_report.csv
 ```
 
-`runs/` 只保存最终 Markdown 报告。原始接口响应、候选池、指标 JSON、评分中间表和脚本副本都属于过程数据，不归档。
+`YYYY-MM-DD.md` 保存当日筛选报告；`backtests/` 保存最近 10 天推荐回测报告和明细 CSV。原始接口响应、候选池、指标 JSON、评分中间表和脚本副本都属于过程数据，不归档。
 
 ## 数据纪律
 
@@ -118,6 +122,7 @@ B 档是主要等待池。若回测结果显示 B 档持续优于 A 档，应宁
 - 核心表格：档位、状态、排名、标的、代码、主线、关键数据、技术状态、MACD/KDJ、量价、证据/逻辑、支撑/失效、评分、买点观察。
 - 逐个点评：方向/主线、关键数据、趋势结构、MACD/KDJ、量价/资金、证据/逻辑、买点观察、失效条件和主要风险。
 - 最终短名单：A 为最优先观察，B 为次优先观察，C/过热/剔除均不得表达为买入名单。
+- 最后一步必须回测向前 10 天已有推荐结果，并在 `runs/ashare-trend-buy/backtests/` 生成 `*_backtest_report.md` 和同名 CSV。回测口径必须包含推荐当日、5 个交易日、至今涨跌幅；若历史报告不足 10 天，就按实际可用日期回测并说明样本数。
 
 最后必须补充：
 
@@ -134,3 +139,4 @@ B 档是主要等待池。若回测结果显示 B 档持续优于 A 档，应宁
 - 不残留“需盘后复核”“待计算”“未取得K线”等占位；若确实存在，必须解释并标为初筛观察池。
 - MACD/KDJ 必须来自真实 OHLC 计算，并写明数据源。
 - 结果保存到 `runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md`，展示给用户的内容与保存文件一致。
+- 最后确认 `runs/ashare-trend-buy/backtests/` 下已生成本次 `*_backtest_report.md`；若因 `--no-network` 或缺少历史报告无法生成，必须在最终输出说明原因。

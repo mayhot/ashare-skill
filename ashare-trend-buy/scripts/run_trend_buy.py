@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 RUN_DIR = None
+RUNS_ROOT = None
 SOURCE_TOP200 = None
 SCREENING_DATE = None
 NO_NETWORK = False
@@ -149,6 +150,10 @@ def fnum(value, default=0.0):
         return default if math.isnan(value) else value
     except Exception:
         return default
+
+
+def stock_symbol(code: str) -> str:
+    return ("sh" if code.startswith(("6", "9")) else "sz") + code
 
 
 def load_backtest_cooling_codes(runs_root: Path):
@@ -756,22 +761,254 @@ def generate_report(rows, summary):
     return "\n".join(lines) + "\n"
 
 
+def parse_shortlist_report(path: Path):
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| ") or line.startswith("|---") or line.startswith("| 档位"):
+            continue
+        parts = [part.strip() for part in line.strip("|").split("|")]
+        if len(parts) >= 14:
+            tier, state, rank, name, code = parts[:5]
+        elif len(parts) >= 13:
+            tier, rank, name, code = parts[:4]
+            state = tier
+        elif len(parts) >= 10 and parts[2].isdigit() and len(parts[2]) == 6:
+            tier, name, code = parts[:3]
+            state = tier
+            rank = ""
+        else:
+            continue
+        if code.isdigit() and len(code) == 6:
+            rows.append({"tier": tier, "state": state, "rank": rank, "name": name, "code": code})
+    return rows
+
+
+def select_lookback_reports(runs_root: Path, end_date: str, lookback_days: int):
+    skill_root = runs_root / "ashare-trend-buy"
+    reports = []
+    if not skill_root.exists():
+        return reports
+    for folder in skill_root.iterdir():
+        if not folder.is_dir():
+            continue
+        try:
+            report_date = date.fromisoformat(folder.name)
+        except ValueError:
+            continue
+        if folder.name >= end_date:
+            continue
+        report_path = folder / f"{folder.name}.md"
+        if report_path.exists():
+            reports.append((report_date, report_path))
+    reports = sorted(reports, key=lambda item: item[0], reverse=True)[:lookback_days]
+    return list(reversed(reports))
+
+
+def pct_text(value):
+    return "" if value is None else f"{value:+.2f}%"
+
+
+def stat(values):
+    values = [value for value in values if value is not None]
+    if not values:
+        return None
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    return {
+        "n": len(values),
+        "avg": mean(values),
+        "median": median,
+        "win": sum(value > 0 for value in values),
+        "best": max(values),
+        "worst": min(values),
+    }
+
+
+def summarize_backtest_group(rows, key, metric):
+    groups = {}
+    for row in rows:
+        groups.setdefault(row[key], []).append(row)
+    lines = []
+    for group_key in sorted(groups):
+        rows_in_group = groups[group_key]
+        summary = stat([row[metric] for row in rows_in_group])
+        if not summary:
+            lines.append(f"| {group_key} | {len(rows_in_group)} |  |  |  |  |  |")
+            continue
+        lines.append(
+            f"| {group_key} | {len(rows_in_group)} | {pct_text(summary['avg'])} | "
+            f"{pct_text(summary['median'])} | {summary['win']}/{summary['n']} | "
+            f"{pct_text(summary['best'])} | {pct_text(summary['worst'])} |"
+        )
+    return lines
+
+
+def build_lookback_backtest(lookback_days: int):
+    if NO_NETWORK:
+        return None
+    reports = select_lookback_reports(RUNS_ROOT, SCREENING_DATE, lookback_days)
+    if not reports:
+        return None
+
+    rows = []
+    for report_date, report_path in reports:
+        rec_date = report_date.isoformat()
+        for item in parse_shortlist_report(report_path):
+            row = {"recommend_date": rec_date, **item}
+            try:
+                krows, _payload = fetch_kline(stock_symbol(item["code"]))
+                index = next((idx for idx, krow in enumerate(krows) if krow["date"] == rec_date), None)
+                if index is None:
+                    row.update({"error": "推荐日K线缺失"})
+                else:
+                    rec_close = krows[index]["close"]
+                    prev_close = krows[index - 1]["close"] if index > 0 else 0
+                    fifth = krows[index + 5] if index + 5 < len(krows) else None
+                    latest = krows[-1]
+                    row.update(
+                        {
+                            "recommend_close": rec_close,
+                            "same_day_pct": pct(rec_close, prev_close),
+                            "fifth_trade_date": fifth["date"] if fifth else "",
+                            "fifth_trade_close": fifth["close"] if fifth else None,
+                            "five_trade_day_pct": pct(fifth["close"], rec_close) if fifth else None,
+                            "now_date": latest["date"],
+                            "now_price": latest["close"],
+                            "to_now_pct": pct(latest["close"], rec_close),
+                            "available_trade_days_after": len(krows) - index - 1,
+                            "five_day_status": "complete_5d" if fifth else "less_than_5d",
+                            "error": "",
+                        }
+                    )
+            except Exception as exc:
+                row.update({"error": str(exc)})
+            rows.append(row)
+
+    if not rows:
+        return None
+
+    start = reports[0][0].isoformat()
+    end = reports[-1][0].isoformat()
+    out_dir = RUNS_ROOT / "ashare-trend-buy" / "backtests"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{SCREENING_DATE}_trend_buy_{start}_to_{end}_backtest_report"
+    csv_path = out_dir / f"{stem}.csv"
+    md_path = out_dir / f"{stem}.md"
+
+    fields = [
+        "recommend_date",
+        "tier",
+        "state",
+        "rank",
+        "name",
+        "code",
+        "recommend_close",
+        "same_day_pct",
+        "fifth_trade_date",
+        "fifth_trade_close",
+        "five_trade_day_pct",
+        "now_date",
+        "now_price",
+        "to_now_pct",
+        "available_trade_days_after",
+        "five_day_status",
+        "error",
+    ]
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
+
+    valid = [row for row in rows if not row.get("error")]
+    overall_same = stat([row["same_day_pct"] for row in valid])
+    overall_five = stat([row["five_trade_day_pct"] for row in valid])
+    overall_now = stat([row["to_now_pct"] for row in valid])
+
+    lines = []
+    lines.append(f"# ashare-trend-buy 最近{lookback_days}天推荐回测报告")
+    lines.append("")
+    lines.append(f"生成日期：{SCREENING_DATE}")
+    lines.append(f"回测范围：{start} 至 {end}")
+    lines.append("收益口径：推荐当日=推荐日收盘价相对前一交易日收盘价；5日=推荐日收盘价至第5个后续交易日收盘价；至今=推荐日收盘价至最新可用日K收盘价。")
+    lines.append(f"样本数量：{len(valid)}；失败样本：{len(rows) - len(valid)}；明细CSV：`{csv_path.relative_to(ROOT)}`")
+    lines.append("")
+    lines.append("## 总体表现")
+    lines.append("")
+    lines.append("| 指标 | 样本 | 平均 | 中位数 | 胜率 | 最好 | 最差 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for label, summary in [("推荐当日", overall_same), ("5个交易日", overall_five), ("至今", overall_now)]:
+        if summary:
+            lines.append(
+                f"| {label} | {summary['n']} | {pct_text(summary['avg'])} | {pct_text(summary['median'])} | "
+                f"{summary['win']}/{summary['n']} | {pct_text(summary['best'])} | {pct_text(summary['worst'])} |"
+            )
+        else:
+            lines.append(f"| {label} | 0 |  |  |  |  |  |")
+    lines.append("")
+    lines.append("## 按推荐日期")
+    lines.append("")
+    lines.append("| 日期 | 样本 | 至今平均 | 至今中位数 | 至今胜率 | 最好 | 最差 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.extend(summarize_backtest_group(valid, "recommend_date", "to_now_pct"))
+    lines.append("")
+    lines.append("## 按档位")
+    lines.append("")
+    lines.append("| 档位 | 样本 | 至今平均 | 至今中位数 | 至今胜率 | 最好 | 最差 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.extend(summarize_backtest_group(valid, "tier", "to_now_pct"))
+    lines.append("")
+    lines.append("## 按状态")
+    lines.append("")
+    lines.append("| 状态 | 样本 | 至今平均 | 至今中位数 | 至今胜率 | 最好 | 最差 |")
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    lines.extend(summarize_backtest_group(valid, "state", "to_now_pct"))
+    lines.append("")
+    lines.append("## 明细")
+    lines.append("")
+    lines.append("| 推荐日 | 档位 | 状态 | 标的 | 代码 | 推荐收盘 | 推荐当日 | 5日 | 至今 | 最新日期 |")
+    lines.append("|---|---|---|---|---:|---:|---:|---:|---:|---|")
+    for row in valid:
+        lines.append(
+            f"| {row['recommend_date']} | {row['tier']} | {row['state']} | {row['name']} | {row['code']} | "
+            f"{row['recommend_close']:.2f} | {pct_text(row['same_day_pct'])} | "
+            f"{pct_text(row['five_trade_day_pct'])} | {pct_text(row['to_now_pct'])} | {row['now_date']} |"
+        )
+    if len(rows) - len(valid):
+        lines.append("")
+        lines.append("## 未完成样本")
+        lines.append("")
+        lines.append("| 推荐日 | 档位 | 标的 | 代码 | 原因 |")
+        lines.append("|---|---|---|---:|---|")
+        for row in rows:
+            if row.get("error"):
+                lines.append(f"| {row['recommend_date']} | {row['tier']} | {row['name']} | {row['code']} | {row['error']} |")
+    lines.append("")
+    lines.append("以上为研究回测，不构成个性化投资建议。")
+    md_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"markdown": md_path, "csv": csv_path, "rows": len(valid), "failed": len(rows) - len(valid)}
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Run ashare-trend-buy screening.")
     parser.add_argument("--date", default=date.today().isoformat(), help="Screening date, YYYY-MM-DD.")
     parser.add_argument("--runs-dir", default="runs", help="Run artifact root directory.")
     parser.add_argument("--top200", help="Optional verified same-day turnover top-200 CSV.")
     parser.add_argument("--no-network", action="store_true", help="Disable network access.")
+    parser.add_argument("--backtest-lookback-days", type=int, default=10, help="After screening, backtest prior dated reports.")
+    parser.add_argument("--skip-backtest", action="store_true", help="Skip the final prior-recommendation backtest step.")
     return parser.parse_args()
 
 
 def configure(args):
-    global RUN_DIR, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK, COOLING_CODES
+    global RUN_DIR, RUNS_ROOT, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK, COOLING_CODES
     SCREENING_DATE = args.date
     NO_NETWORK = bool(args.no_network)
     runs_root = Path(args.runs_dir)
     if not runs_root.is_absolute():
         runs_root = ROOT / runs_root
+    RUNS_ROOT = runs_root
     COOLING_CODES = load_backtest_cooling_codes(runs_root)
     RUN_DIR = runs_root / "ashare-trend-buy" / SCREENING_DATE
     RUN_DIR.mkdir(parents=True, exist_ok=True)
@@ -816,6 +1053,19 @@ def main():
     tier_order = {"A": 5, "B": 4, "C": 3, "过热跟踪": 2, "剔除": 1}
     for row in sorted(calculated, key=lambda r: (tier_order.get(r["tier"], 0), r["score"]), reverse=True)[:25]:
         print(row["tier"], row["score"], row["code"], row["name"], row["theme"], row["date"])
+    if not args.skip_backtest:
+        backtest_summary = build_lookback_backtest(args.backtest_lookback_days)
+        if backtest_summary:
+            print(
+                "backtest_report",
+                str(backtest_summary["markdown"].relative_to(ROOT)),
+                "rows",
+                backtest_summary["rows"],
+                "failed",
+                backtest_summary["failed"],
+            )
+        else:
+            print("backtest_report skipped: no prior reports or network disabled")
 
 
 if __name__ == "__main__":
