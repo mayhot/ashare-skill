@@ -35,6 +35,7 @@ class Segment:
 # added here when their evidence becomes strong enough.
 FRONT_ROW_UNIVERSE: dict[str, Segment] = {
     "688981": Segment("B", "晶圆代工/国产半导体锚", 5),
+    "002156": Segment("S", "先进封测/Chiplet/AMD链", 5),
     "300502": Segment("S", "光模块/高速光通信", 5),
     "603986": Segment("A", "存储芯片/MCU", 5),
     "300476": Segment("S", "AI PCB/高多层板", 5),
@@ -71,6 +72,9 @@ FRONT_ROW_UNIVERSE: dict[str, Segment] = {
     "688629": Segment("S", "高速连接器/背板连接", 4),
     "688048": Segment("S", "光芯片/激光芯片", 3),
     "601208": Segment("A", "电子树脂/绝缘材料", 3),
+    "600183": Segment("A", "CCL/覆铜板/AI服务器材料", 5),
+    "603256": Segment("A", "电子布/玻纤布", 4),
+    "300408": Segment("B", "MLCC/陶瓷材料", 3),
     "688082": Segment("A", "半导体设备/清洗设备", 5),
     "301526": Segment("A", "玻纤/电子布上游", 3),
     "300567": Segment("A", "检测量测设备", 4),
@@ -80,6 +84,14 @@ FRONT_ROW_UNIVERSE: dict[str, Segment] = {
     "002837": Segment("A", "液冷/温控", 4),
     "600601": Segment("A", "PCB/电子电路", 3),
 }
+
+
+# Backtest 2026-05-20..2026-05-27 showed better follow-through in
+# advanced packaging, AI PCB, CCL/electronic cloth, and mild pullbacks.
+PROVEN_EDGE_CODES = {"002156", "002185", "600584", "002463", "600183", "603256", "300408", "301526"}
+CAUTION_CODES = {"688313", "688498", "002837", "002050", "688110", "688072", "002008"}
+EDGE_DIRECTIONS = ("先进封测", "封测", "Chiplet", "PCB", "CCL", "覆铜板", "电子布", "玻纤", "陶瓷材料")
+CAUTION_DIRECTIONS = ("液冷", "温控", "CPO光源", "薄膜沉积", "存储芯片")
 
 
 def parse_args() -> argparse.Namespace:
@@ -246,6 +258,50 @@ def has_indicators(ind: dict[str, Any]) -> bool:
     return bool(ind and ind.get("ma20"))
 
 
+def direction_has(segment: Segment, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in segment.direction for keyword in keywords)
+
+
+def backtest_edge_adjustment(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
+    """Small 2026-05 backtest-informed adjustment, bounded to avoid overfit."""
+    code = str(row.get("code", ""))
+    rank = int(row["rank"])
+    change = to_float(row.get("changepercent"))
+    adjustment = 0
+
+    if code in PROVEN_EDGE_CODES:
+        adjustment += 4
+    elif direction_has(segment, EDGE_DIRECTIONS):
+        adjustment += 2
+
+    if code in CAUTION_CODES:
+        adjustment -= 5
+    elif direction_has(segment, CAUTION_DIRECTIONS):
+        adjustment -= 2
+
+    if -5 <= change <= 3 and rank <= 100:
+        adjustment += 3
+    elif 3 < change <= 6 and direction_has(segment, EDGE_DIRECTIONS):
+        adjustment += 1
+    elif change >= 9.5:
+        adjustment -= 4
+
+    if 101 <= rank <= 150:
+        adjustment -= 2
+
+    if has_indicators(ind):
+        dev20 = float(ind["dev20"])
+        rsi_value = float(ind["rsi"])
+        if dev20 > 25 or rsi_value > 80:
+            adjustment -= 4
+        elif dev20 > 18 or rsi_value > 75:
+            adjustment -= 2
+        if code in PROVEN_EDGE_CODES and -3 <= dev20 <= 12 and rsi_value <= 75:
+            adjustment += 2
+
+    return max(-8, min(8, adjustment))
+
+
 def score(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
     rank = int(row["rank"])
     change = to_float(row.get("changepercent"))
@@ -285,12 +341,35 @@ def score(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
         + max(0, crowding)
         + trend
         + min(15, fundamentals)
+        + backtest_edge_adjustment(row, segment, ind)
     )
     return round(total)
 
 
-def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
+def a_eligible(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> bool:
+    code = str(row.get("code", ""))
     rank = int(row["rank"])
+    change = to_float(row.get("changepercent"))
+    market_cap_yi = to_float(row.get("mktcap")) / 10000
+
+    if rank > 100 or not (500 <= market_cap_yi <= 2000):
+        return False
+    if change >= 9.5:
+        return False
+    if code in CAUTION_CODES and code not in PROVEN_EDGE_CODES:
+        return False
+    if direction_has(segment, CAUTION_DIRECTIONS) and code not in PROVEN_EDGE_CODES:
+        return False
+    if has_indicators(ind):
+        dev20 = float(ind["dev20"])
+        rsi_value = float(ind["rsi"])
+        if dev20 > 18 or rsi_value > 78:
+            return False
+    return True
+
+
+def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
+    segment = FRONT_ROW_UNIVERSE.get(row.get("code"))
     change = to_float(row.get("changepercent"))
     market_cap_yi = to_float(row.get("mktcap")) / 10000
     dev20 = float(ind.get("dev20", 0)) if has_indicators(ind) else None
@@ -306,9 +385,9 @@ def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
         return "B" if numeric_score >= 78 else "C"
     if market_cap_yi < 500:
         return "C" if numeric_score >= 70 else "剔除"
-    if rank > 100 and numeric_score < 97:
-        return "B" if numeric_score >= 75 else "C"
-    return "A" if numeric_score >= 85 else "B" if numeric_score >= 75 else "C" if numeric_score >= 65 else "剔除"
+    if segment and not a_eligible(row, segment, ind):
+        return "B" if numeric_score >= 75 else "C" if numeric_score >= 65 else "剔除"
+    return "A" if numeric_score >= 90 else "B" if numeric_score >= 76 else "C" if numeric_score >= 66 else "剔除"
 
 
 def tech_summary(ind: dict[str, Any]) -> str:
@@ -352,51 +431,17 @@ def support_text(ind: dict[str, Any]) -> str:
     return f"20日线约{float(ind['ma20']):.2f}；跌破后2-3日不能收回则降级"
 
 
-def risk_flags(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> list[str]:
-    flags: list[str] = []
-    rank = int(row["rank"])
-    change = to_float(row.get("changepercent"))
-    market_cap_yi = to_float(row.get("mktcap")) / 10000
-    if rank > 100:
-        flags.append("成交额排名偏后")
-    if market_cap_yi > 2000:
-        flags.append("市值偏大")
-    if change >= 9.5:
-        flags.append("当日涨幅过热")
-    if segment.front_row < 5:
-        flags.append("细分前排确认度需复核")
-    if has_indicators(ind):
-        dev20 = float(ind["dev20"])
-        rsi_value = float(ind["rsi"])
-        if dev20 > 15:
-            flags.append("MA20偏离较大")
-        if rsi_value > 75:
-            flags.append("RSI偏热")
-        if float(ind["dif"]) <= float(ind["dea"]):
-            flags.append("MACD偏弱")
-    return flags
-
-
-def validation_hypothesis(item: dict[str, Any]) -> str:
-    grade_name = item["grade"]
-    ind = item["indicators"]
-    flags = risk_flags(item["row"], item["segment"], ind)
-    if grade_name == "A":
-        if has_indicators(ind) and float(ind["dev20"]) <= 5:
-            return "次日应强于同细分均值；若跌破20日线或放量收弱，降级复盘"
-        return "次日验证回踩承接；若不能重新靠近短均线转强，降为B档"
-    if grade_name == "B":
-        return "只验证买点，不追高；若缩量企稳并重回短均线才升级观察"
-    if grade_name == "C":
-        return "仅跟踪强弱；除非放量收复20日线且细分转强，否则不升级"
-    if "市值偏大" in flags or int(item["row"]["rank"]) <= 10:
-        return "板块温度计；看龙头是否续强扩散，不按二线慢牛买点处理"
-    return "剔除原因复核；只有过热消化或基本面证据增强后再回池"
-
-
-def flags_text(item: dict[str, Any]) -> str:
-    flags = risk_flags(item["row"], item["segment"], item["indicators"])
-    return "、".join(flags) if flags else "无明显硬伤"
+def backtest_profile_text(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> str:
+    adjustment = backtest_edge_adjustment(row, segment, ind)
+    if adjustment >= 4:
+        return "回测因子加分：验证细分/温和形态"
+    if adjustment <= -4:
+        return "回测因子降级：高波动/过热/低胜率形态"
+    if adjustment > 0:
+        return "回测因子小幅加分"
+    if adjustment < 0:
+        return "回测因子小幅降权"
+    return "回测因子中性"
 
 
 def fmt_yi(value: Any) -> str:
@@ -414,15 +459,6 @@ def fmt_pct(value: Any) -> str:
 def names(candidates: list[dict[str, Any]], grade_name: str, limit: int = 5) -> str:
     selected = [item["row"]["name"] for item in candidates if item["grade"] == grade_name]
     return "、".join(selected[:limit]) if selected else "无"
-
-
-def thermometer(candidates: list[dict[str, Any]], limit: int = 8) -> str:
-    anchors = [item for item in candidates if item["grade"] == "剔除"][:limit]
-    if not anchors:
-        return "无"
-    return "、".join(
-        f"{item['row']['name']}({fmt_pct(item['row'].get('changepercent'))})" for item in anchors
-    )
 
 
 def build_report(
@@ -444,9 +480,9 @@ def build_report(
         "结果类型：研究观察池，不是最终买入名单",
         f"run_time：{run_time}",
         f"quote_ticktime：{quote_ticktime}",
-        "skill_version：ashare-ai-slowbull-postclose-v3+run_slowbull",
+        "skill_version：ashare-ai-slowbull-postclose-v4+backtest-edge",
         "stock_pool_version：frontrow-ai-hardware-chip-equipment-storage-v1",
-        "threshold_version：postclose-hardcap-v2+ma20-frontrow+nextday-validation",
+        "threshold_version：postclose-hardcap-v3+backtest-edge-20260520-0527",
         "fallback_used：False",
         "post_close_validated：True",
         "",
@@ -455,20 +491,19 @@ def build_report(
         f"- 数据完整性：有效A股前200记录 {top_count} 条；候选交集 {len(candidates)} 条；前排样本 ticktime 覆盖到 {quote_ticktime}。",
         "- 指标口径：MA10/20/30、RSI14、MACD(12,26,9)、KDJ(9,3,3)由日K计算；MACD/KDJ只作辅助确认，不作单独买卖依据。",
         "- 市场环境：AI硬件链按成交额前排强度、核心票位置和过热程度判断；若涨停和大阳线密集，优先等待20日线企稳而非追涨。",
-        "- 附加评估：已检查趋势票是否回踩20日线企稳；已优先排序行业细分中公认知名度高、人气高的前排。",
+        "- 附加评估：已检查趋势票是否回踩20日线企稳；已优先排序行业细分中公认知名度高、人气高的前排；已纳入2026-05-20至2026-05-27回测因子。",
         "- 限制说明：基本面证据以公开业务定位和产业链关系为主，未逐条展开财报公告原文；对涨停、过热、市值过大的票执行硬降级或板块锚剔除。",
         "",
         "## 一、筛选结论",
-        "- 市场环境：芯片、半导体设备、存储和AI硬件上游强度高时，重点找不过热的细分前排，并等待趋势票回踩20日线附近企稳。",
+        "- 市场环境：芯片、半导体设备、存储和AI硬件上游强度高时，重点找不过热的细分前排；回测显示温和回踩和先进封测/PCB/CCL/电子布更容易延续，追高与高波动CPO光源需降权。",
         f"- A档，重点观察：{names(candidates, 'A')}",
         f"- B档，等待买点：{names(candidates, 'B')}",
         f"- C档，只跟踪不追：{names(candidates, 'C')}",
         f"- 剔除/板块锚：{names(candidates, '剔除', 8)}",
-        f"- 板块温度计：{thermometer(candidates)}；用于判断主线升温或退潮，不等同于二线慢牛买点。",
         "",
         "## 二、核心表格",
-        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 扣分/风险 | 支撑/失效 | 评分 | 买点观察 | 次日验证假设 |",
-        "|---|---:|---|---:|---|---|---|---|---|---|---:|---|---|",
+        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 回测因子 | 支撑/失效 | 评分 | 买点观察 |",
+        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|",
     ]
 
     for item in display:
@@ -482,7 +517,7 @@ def build_report(
             f"| {item['grade']} | {row['rank']} | {row['name']} | {row['code']} | "
             f"{segment.direction} | 市值{fmt_yi(row.get('mktcap'))}；成交额第{row['rank']}；涨跌幅{fmt_pct(row.get('changepercent'))} | "
             f"{tech_summary(ind)} | 成交额{fmt_amount(row.get('amount'))}；细分前排人气{segment.front_row}/5 | "
-            f"{flags_text(item)}；{evidence} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} | {validation_hypothesis(item)} |"
+            f"{evidence} | {backtest_profile_text(row, segment, ind)} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} |"
         )
 
     detail_items = [item for item in candidates if item["grade"] == "A"][:5]
@@ -497,8 +532,8 @@ def build_report(
             f"- **{row['name']}（{row['code']}，{item['grade']}档）**：{segment.direction}。"
             f"成交额第{row['rank']}、{fmt_amount(row.get('amount'))}，市值约{fmt_yi(row.get('mktcap'))}，涨跌幅{fmt_pct(row.get('changepercent'))}。"
             f"{tech_summary(ind)}。前排/人气评分 {segment.front_row}/5。"
-            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}。"
-            f"次日验证：{validation_hypothesis(item)}。扣分点：{flags_text(item)}。"
+            f"{backtest_profile_text(row, segment, ind)}。"
+            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
         )
 
     lines.extend(
@@ -512,21 +547,16 @@ def build_report(
             f"剔除但跟踪板块强度：{names(candidates, '剔除', 8)}",
             "```",
             "",
-            "## 五、板块温度计与次日验证",
-            "- 剔除/板块锚不是看空名单，而是用来观察主线温度。若板块锚继续放量走强但A/B档走弱，说明资金仍集中在龙头，二线扩散失败；若板块锚休整而A档抗跌或转强，说明补涨扩散更健康。",
-            "- 次日验证优先看三件事：A档平均表现是否显著强于B/C档；A档是否跑赢主要指数和同细分方向；最大拖累是否来自同一细分或共同风险因子。",
-            "- 复盘时必须记录分组平均涨跌幅、胜率、最大赢家、最大拖累、指数参照和规则调权建议。可用 `scripts/validate_slowbull.py --report runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md` 自动生成验证摘要。",
-            "",
-            "## 六、买点观察与失效条件",
+            "## 五、买点观察与失效条件",
             "- 趋势票机会：已经形成趋势的票，若回踩20日均线附近并缩量企稳、重新收回短均线或温和放量转强，才进入重点观察；不把单日大涨本身当作买点。",
-            "- A档纪律：A档只是研究优先级；若次日不能强于同细分、不能守住20日线或出现放量收弱，必须降级复盘。",
-            "- B档纪律：B档只验证买点，不追高；只有缩量企稳、站回短均线或细分同步转强，才允许升级。",
+            "- 回测调权：先进封测、AI PCB、CCL/覆铜板、电子布/玻纤布在本轮验证中胜率更高；液冷、独立CPO光源、薄膜沉积设备、单日涨幅过热的存储芯片需降低档位或只等二次确认。",
+            "- A档纪律：A档必须满足市值500-2000亿、成交额前100、非涨停/非极端过热、非低胜率高波动形态；否则即使分数高也放入B档等待买点。",
             "- 前排优先：同一细分方向优先看公认知名度高、人气高、成交额持续靠前的前排；冷门后排只有在趋势和证据显著更强时才提高优先级。",
             "- 平台突破：横盘5-15个交易日后温和放量突破，并且次日不跌回平台。",
             "- 强势二买：大阳线后3-8日缩量整理，不破10日/20日线，再次放量转强。",
             "- 统一失效：跌破20日线且2-3日无法收回；高位放量滞涨；MACD/KDJ高位死叉与价格走弱共振；半导体/AI硬件核心前排集体破位。",
             "",
-            "## 七、数据限制与风险提示",
+            "## 六、数据限制与风险提示",
             "本报告是研究观察池，不构成个性化投资建议。若后续高位前排放量滞涨、核心龙头跌破20日线或成交额快速退潮，A/B档都需要重新降级复核。",
         ]
     )

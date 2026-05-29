@@ -1,192 +1,136 @@
 ---
 name: ashare-trend-buy
-description: Screen A-share research watchlists using right-side trend-following buy standards. Use when the user asks for A股右侧趋势买入、趋势买点、候选标的筛选、A/B/C分档、缩量回踩、平台突破、强势二买, or asks to evaluate A-share candidates with moving averages, volume-price behavior, MACD/KDJ, main-theme strength, support/invalidation, and fundamentals. This skill produces research watchlists only, not personalized investment advice.
+description: Screen A-share research watchlists using right-side trend-following buy standards. Use when the user asks for A股右侧趋势买入、趋势买点、候选标的筛选、A/B/C分档、缩量回踩、平台突破、强势二买、回测验证或提高推荐胜率。本技能只产出研究观察池，不构成个性化投资建议。
 ---
 
-# A股右侧趋势买入筛选
+# A股右侧趋势买入标准
 
-Use this skill to turn A-share candidates into a disciplined research watchlist. The goal is not to predict the lowest point; it is to find stocks that already have upward trend structure, healthy pullback or breakout behavior, current theme support, clear support/invalidation, and understandable fundamental or industry logic.
+本 skill 用于把 A 股候选标的整理成纪律化研究观察池。目标不是预测最低点，而是寻找已经进入上升趋势、回调或突破结构健康、处在当前市场主线中，并且基本面或产业逻辑能解释的标的。
 
-Never present output as a direct buy recommendation. Use conditional language such as “观察”, “等待确认”, “若跌破则剔除”, “条件满足后再评估”.
+输出必须使用“观察、等待确认、若跌破则剔除、条件满足后再评估”等条件化表达。不得写成直接买入建议。不得编造成交额、均线、指标、财报、公告、行业催化或资金流数据。
 
-## Preferred Script
+## 首选脚本
 
-Prefer the bundled script for repeatable runs:
+优先运行同目录脚本，保证口径一致：
 
 ```powershell
-python ashare-trend-buy/scripts/run_trend_buy.py --date 2026-05-22
+python ashare-trend-buy/scripts/run_trend_buy.py --date YYYY-MM-DD
 ```
 
-Optional arguments:
+可选参数：
 
-- `--top200 PATH`: optionally reuse a user-supplied verified same-day turnover top-200 CSV.
-- `--runs-dir runs`: output root.
-- `--no-network`: use only the supplied/local candidate file and fail if daily K-line fetching is required.
+- `--top200 PATH`：复用用户提供、已核验的同日成交额前 200 CSV。
+- `--runs-dir runs`：输出根目录。
+- `--no-network`：禁用网络；仅在本地候选池和 K 线可用时使用。
 
-The script must save:
+脚本必须保存：
 
 ```text
 runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md
 ```
 
-For next-day or same-day validation of a prior shortlist, use:
+`runs/` 只保存最终 Markdown 报告。原始接口响应、候选池、指标 JSON、评分中间表和脚本副本都属于过程数据，不归档。
 
-```powershell
-python ashare-trend-buy/scripts/validate_trend_buy.py --source-date 2026-05-27 --quote-date 2026-05-28
-```
+## 数据纪律
 
-Do not archive process data in `runs/`: raw API responses, K-line payloads, candidate CSVs, scoring JSON, and copied helper scripts are intermediate data and should stay in memory or a temporary workspace only.
+1. 先确认筛选日期，不在规则中硬编码日期。
+2. 候选池优先使用用户提供的同日成交额前 200；否则从新浪成交额排名获取。
+3. 排名数据若出现前排成交额为 0、价格为 0、缺失成交额或盘前 tick，应视为无效。
+4. 日 K/OHLC 用于计算 5/10/20/30/60 日均线、量比、MACD、KDJ；每只至少需要 60 根日 K。
+5. 最新 K 线日期若不同于筛选日期，必须在报告中说明，不能静默混用。
+6. MACD/KDJ 只做辅助确认或风险提示，不能单独触发 A 档或买点观察。
 
-## Data Discipline
+## 回测反思写入规则
 
-1. Confirm the screening date. Do not hard-code dates in reusable skill logic.
-2. Prefer a user-supplied same-day verified turnover top-200 file when present; otherwise fetch the ranking directly.
-3. Otherwise fetch the A-share turnover ranking from Sina. Treat a ranking as invalid if the top rows have zero or missing turnover, zero price, or pre-open tick times.
-4. Use Tencent or Sina daily OHLC for 5/10/20/30/60-day MA, volume ratio, MACD, and KDJ. Require at least 60 daily bars.
-5. If the latest K-line date differs from the screening date, state the lag in the report. Do not silently mix dates.
-6. Keep process data out of `runs/`; the dated Markdown report is the only required run artifact.
+2026-05-20 至 2026-05-27 回测显示：
 
-## Scoring And Tiering
+- B 档的至今表现和 5 日表现优于 A 档，说明“等待买点池”比“直接重点观察”更稳。
+- C 档至今均值接近 0，不能进入正式短名单，只能保留板块强度跟踪。
+- 5月25日、5月26日同日涨幅高，但至今收益转负，说明冲高后的票要先归入过热跟踪。
+- 多次推荐但持续走弱的标的，需要进入冷却观察，不能因为单日修复再次进入 A/B。
+- 半导体、CPO/光模块、AI 硬件等主线前排贡献了主要正收益；资源、材料、机器人/汽车零部件、量子等分支必须提高门槛。
 
-Score out of 100:
+因此，后续分档以“提高胜率”为优先目标，而不是凑满 A 档数量。
 
-| Dimension | Weight | Guidance |
+## 评分模型
+
+总分 100：
+
+| 维度 | 权重 | 要点 |
 |---|---:|---|
-| Trend structure | 17 | 5/10/20-day alignment, higher lows, price above key averages |
-| Pullback/breakout quality | 13 | shrinking-volume stabilization, trend-stock pullback near the 20-day MA with stabilization, or clean platform breakout |
-| Volume-price health | 13 | moderate expansion on rises, contraction on pullbacks, no exhaustion signal |
-| Theme strength | 15 | current policy, earnings, industry, AI hardware, semiconductor, PCB, CPO, robot, energy-storage, or other verified theme; prefer recognized high-awareness, high-popularity front-runners in their industry segment |
-| Support and risk control | 15 | clear support, invalidation level, acceptable distance to support |
-| Fundamental/theme logic | 15 | financial reports, announcements, orders, products, capacity, policy, or industry inflection |
-| Technical auxiliaries | 7 | MACD/KDJ confirmation or warning only |
-| Liquidity | 5 | active turnover and tradability |
+| 趋势结构 | 17 | 5/10/20日均线、多头排列、低点抬高、股价站上关键均线 |
+| 回调/突破质量 | 13 | 缩量企稳、接近20日线企稳、平台突破、突破后不快速跌回 |
+| 量价健康度 | 13 | 上涨温和放量、回调缩量、无出货形态 |
+| 主线强度 | 15 | 优先半导体、CPO/光模块、PCB、AI服务器、存储、高速连接器、液冷等验证主线前排 |
+| 支撑与风控 | 15 | 支撑清晰，失效位明确，离支撑不太远 |
+| 基本面/逻辑 | 15 | 财报、公告、订单、产品、产能、行业拐点或政策逻辑可验证 |
+| 技术辅助指标 | 7 | MACD/KDJ辅助确认或风险提示 |
+| 流动性 | 5 | 成交活跃，不太冷门 |
 
-Tier rules:
-
-```text
-85-100: A档，重点观察，等待规则内买点确认
-75-84: B档，逻辑较好，但需区分等待回踩和强势延续确认
-65-74: C档，只跟踪，不急买；可标记低确定性高弹性
-高分但过热: 过热跟踪，不追高，等待分歧后的二次确认
-失效或<65: 剔除
-```
-
-State rules:
+## 分档与状态
 
 ```text
-A-确认观察：趋势、主线、量价和支撑条件较完整。
-B-等待回踩：逻辑较好，但买点未出现，等待缩量回踩或平台确认。
-B-强势延续：主线前排放量突破或强承接，但不能追高，需盘中确认。
-C-低确定性高弹性：辨识度或证据不足，但弹性强，保留跟踪。
-C-只跟踪：结构尚可但主线/人气/买点不足。
-X-过热强势：距20日线过远、单日大涨未整理等，不追高但保留二次确认池。
-X-失效剔除：放量下跌、MACD/KDJ破位、支撑失效或趋势损坏。
+A档：主线纯度高、不过热、靠近支撑、量能可控，等待规则内买点确认。
+B档：逻辑和趋势较好，但仍需等待回调、缩量或突破确认。
+C档：只跟踪，不进入正式短名单。
+过热跟踪：强势但短线涨幅、20日线偏离、换手、量比或KDJ过热，不追高。
+剔除：硬性风险、评分不足、破位或低胜率结构。
 ```
 
-Hard downgrade/exclusion rules override raw score:
+A 档必须同时满足：
 
-- If price is below the 20-day MA and 5/10/20-day MAs remain bearish, cap at C or remove.
-- For trend stocks, a pullback toward the 20-day MA is an opportunity only after stabilization: strong stabilization near -1% to +5% from the 20-day MA with calm volume and no obvious MACD damage, or watchable stabilization near -2% to +10% with controlled volume.
-- For same-tier candidates, prefer recognized high-awareness, high-popularity front-runners in their industry segment; use sector-level turnover/relative-strength rank when available, and downgrade weak followers with low recognition or poor relative strength.
-- If price is far above the 20-day MA, force downgrade even when score is high. Use 18% as a caution threshold and 25% as a hard “do not chase” threshold. For high-score main-theme front-runners, route this to `X-过热强势` rather than true deletion unless price action has already failed.
-- If the stock just had a sharp one-day spike and has not consolidated, do not keep A档; classify it as `B-强势延续` or `X-过热强势` depending on distance from support and theme strength.
-- If there is KDJ高位死叉, MACD死叉 with broken support, high-position huge-volume upper shadow, failed breakout, or放量大跌, downgrade or remove. Treat 放量下跌 and MACD死叉叠加破位 as `X-失效剔除`.
-- If a high raw-score stock is downgraded or removed by a hard rule, state the raw score, hard-rule reason, and risk-adjusted tier clearly in the table or commentary.
-- MACD/KDJ are auxiliary only. They must never be the sole reason for an A档 or buy-point observation.
+- 属于当前验证主线，且最好是细分前排或高成交辨识度标的。
+- 单日涨幅不超过约 4%，距 20 日线不超过约 12%，换手不超过约 15%，量比不超过约 2.2。
+- 没有 KDJ 高位偏热、MACD 死叉、放量下跌、远离均线、连续加速等风险。
+- 未出现在最近回测的连续走弱冷却名单中。
 
-## Report Ordering
+B 档是主要等待池。若回测结果显示 B 档持续优于 A 档，应宁可少给 A 档，也不要把“还没等到买点”的票提前抬到 A 档。
 
-Always order the final table and shortlists by tier first, then score:
+## 硬性剔除与降级
+
+- 股价在 20 日线下方，且 5/10/20 日均线仍空头。
+- 单日大涨后未缩量整理，尤其距 20 日线超过约 10%。
+- 距 20 日线超过约 18%：归入过热跟踪；超过约 25%：剔除或硬降级。
+- 换手率过高、量比过高、巨量上影、放量大阴线、突破失败。
+- MACD 死叉叠加跌破关键支撑，或 KDJ 高位死叉。
+- 非当前主线且辨识度不足，只能 C 档或剔除。
+- 最近回测中同一标的多次推荐后持续走弱，进入冷却观察，至少降到 C 档。
+
+## 买点观察模型
+
+买点只能写成条件观察：
+
+- **均线回踩型**：回踩 10 日或 20 日均线，缩量不破，随后温和放量转强。
+- **20日线企稳型**：趋势票调整到或接近 20 日均线，缩量止跌、收盘不破或快速收回 20 日线，再观察温和放量转强。
+- **平台突破型**：横盘 5-15 个交易日后，放量突破平台高点或前高，收盘站稳，次日不快速跌回。
+- **强势二买型**：大涨或涨停后等待 3-8 个交易日缩量整理，不跌破 10/20 日线，再次放量突破。
+- **慢牛延续型**：沿 20/30 日均线缓慢上行，低点逐步抬高，板块回调时抗跌，板块反弹时率先修复。
+
+每只标的必须写清支撑/失效位。优先使用收盘价或连续修复情况判断失效，避免被盘中瞬时击穿误导。
+
+## 输出格式
+
+报告必须包含：
+
+- 数据来源、完整性、最新 K 线日期、指标口径。
+- 回测修正说明：A 档收紧、B 档作为等待池、C 档不进入正式短名单、过热跟踪不追高、冷却观察。
+- A/B/C/过热跟踪/剔除分档结论，每档最多展示 5 只。
+- 核心表格：档位、状态、排名、标的、代码、主线、关键数据、技术状态、MACD/KDJ、量价、证据/逻辑、支撑/失效、评分、买点观察。
+- 逐个点评：方向/主线、关键数据、趋势结构、MACD/KDJ、量价/资金、证据/逻辑、买点观察、失效条件和主要风险。
+- 最终短名单：A 为最优先观察，B 为次优先观察，C/过热/剔除均不得表达为买入名单。
+
+最后必须补充：
 
 ```text
-A档 by score desc
-B档 by score desc
-C档 by score desc
-过热跟踪 by score desc
-剔除 by score desc
+以上为研究观察池，不构成个性化投资建议，实际交易需结合自身风险承受能力和最新行情。
 ```
 
-Do not let a high-score B档 appear before A档 if it was force-downgraded by risk rules.
+## 输出自检
 
-## Required Report
+保存前检查：
 
-Use the same report frame as `ashare-ai-slowbull` so both skills produce comparable Markdown. Keep the trend-buy-specific right-side structure, support/invalidation, and buy-point discipline inside the shared fields.
-
-````markdown
-# A股右侧趋势买入标准筛选结果
-
-筛选日期：
-执行技能：ashare-trend-buy
-结果类型：研究观察池，不是最终买入名单
-
-## 数据说明
-- 数据来源：candidate source, K-line source, fetch method, and saved artifact paths.
-- 数据完整性：candidate count, calculated count, latest K-line date, missing/lagged rows, and whether the candidate pool comes from a same-day top-200 file.
-- 指标口径：MA/volume ratio/20-day MA stabilization tier/MACD/KDJ/support/invalidation/front-runner popularity/scoring methodology.
-- 市场环境：main-theme state and whether right-side trading conditions are supportive.
-- 限制说明：lagged K-lines, missing candidates, degraded data source, or items that can only be kept as initial watchlist.
-- 剔除解释：for high raw-score exclusions, state raw score and hard exclusion reason.
-- 展示上限：each tier shows at most 5 names; if a tier has more than 5 candidates, show the highest-score 5 in the final report.
-
-## 一、筛选结论
-- 市场环境：
-- A档，重点观察（最多5只）：
-- B档，等待买点（最多5只）：
-- C档，只跟踪不追（最多5只）：
-- 过热强势跟踪（最多5只）：
-- 失效剔除/暂不追（最多5只）：
-
-## 二、核心表格
-| 档位 | 状态 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 买点观察 |
-|---|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|
-
-## 三、逐个点评
-逐只按同一顺序说明：方向/主线、关键数据、趋势结构、MACD/KDJ、量价/资金、证据/逻辑、买点观察、失效条件和主要风险。
-
-## 四、最终短名单
-```text
-最优先观察：最多5只
-次优先观察：最多5只
-只跟踪不急买：最多5只
-过热强势跟踪：最多5只
-失效剔除但保留复盘：最多5只
-```
-
-## 五、买点观察与失效条件
-- A/B档共同纪律：
-- 均线回踩：
-- 20日线企稳：
-- 平台突破：
-- 强势延续：
-- 过热跟踪：
-- 强势二买：
-- 统一失效：
-
-## 六、数据限制与风险提示
-
-## 参考来源
-````
-
-Field guidance for this skill:
-
-- `关键数据` should include turnover amount, turnover ratio, latest move, 20-day MA deviation, 20-day MA stabilization tier, and latest K-line date.
-- `证据/逻辑` should focus on main-theme/fundamental logic, not the AI-upstream evidence tier used by `ashare-ai-slowbull`; for otherwise similar candidates, state whether the stock is a recognized high-awareness, high-popularity front-runner in its industry segment, preferably with sector-level turnover/strength rank.
-- `支撑/失效` must state a concrete support level, invalidation level, or downgrade trigger.
-- `买点观察` must preserve the right-side models: shrinking-volume pullback, 20-day MA stabilization, platform breakout, strong second-entry, or slow-bull continuation.
-- `过热强势跟踪` entries with high raw scores must show the overheat reason and the secondary-confirmation condition.
-- `剔除/暂不追` entries must be true invalidation candidates where price/volume/indicator damage is already visible.
-- Each displayed tier must contain no more than 5 names. Rank within each tier by score before truncating.
-- The final answer shown to the user and the archived `YYYY-MM-DD.md` must contain the same report body.
-
-## Validation Loop
-
-When the user asks to check yesterday's selections, validate the latest shortlist with `validate_trend_buy.py`. Report:
-
-- Quote timestamp and index background.
-- Per-tier average return, median return, win rate, best/worst name.
-- Per-state performance, especially `B-强势延续`, `X-过热强势`, and `X-失效剔除`.
-- Reflection on which rules worked, which rules were too strict, and which candidates were false positives or false negatives.
-
-Do not judge the skill only by next-day涨跌幅. Also check whether the predicted path was respected: did A/B wait for confirmation, did overheated names require no-chase discipline, did true invalidation underperform, and did C names remain low-confidence despite occasional single-stock bursts.
-
-End with: `以上为研究观察池，不构成个性化投资建议，实际交易需结合自身风险承受能力和最新行情。`
+- 中文 Markdown 必须为 UTF-8，不得乱码。
+- 表格档位、逐个点评、最终短名单一致。
+- 不残留“需盘后复核”“待计算”“未取得K线”等占位；若确实存在，必须解释并标为初筛观察池。
+- MACD/KDJ 必须来自真实 OHLC 计算，并写明数据源。
+- 结果保存到 `runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md`，展示给用户的内容与保存文件一致。

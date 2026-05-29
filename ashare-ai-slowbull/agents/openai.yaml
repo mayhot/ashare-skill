@@ -1,4 +1,4 @@
 interface:
   display_name: "A股AI硬件慢牛筛选"
-  short_description: "收盘后从成交额前200筛选AI硬件上游二线慢牛，并支持次日验证复盘"
-  default_prompt: "Use $ashare-ai-slowbull 在A股收盘后，从今日A股成交金额前200名中筛选AI硬件上游二线慢牛观察标的。范围包括光模块、光芯片、PCB、CCL、电子布、先进封装、连接器、液冷、电源、芯片、半导体设备、存储和存储接口等方向；明确run_time、trade_date、quote_ticktime、数据源和收盘后校验结果；输出数据说明、A/B/C分档、板块温度计、核心表格、逐个点评、短名单、买点观察、次日验证假设、失效条件和风险提示；每个档位最多展示5只，剔除/板块锚用于跟踪板块温度；只将最终筛选报告保存到 runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md。如需复盘昨天结果，运行验证流程并输出分组胜率、平均涨跌、指数参照和规则反思。"
+  short_description: "收盘后筛选AI硬件上游二线慢牛，并用回测因子提高胜率"
+  default_prompt: "Use $ashare-ai-slowbull 在A股收盘后，从今日A股成交金额前200名中筛选AI硬件上游二线慢牛观察标的。范围包括光模块、光芯片、PCB、CCL、电子布、先进封装、连接器、液冷、电源、芯片、半导体设备、存储和存储接口等方向；明确run_time、trade_date、quote_ticktime、数据源和收盘后校验结果；输出数据说明、A/B/C分档、核心表格、逐个点评、短名单、买点观察、回测因子、失效条件和风险提示；A档必须经过市值、成交额、非过热和2026-05-20至2026-05-27回测胜率过滤，B档保留弹性但等待买点，C档只跟踪不追。"

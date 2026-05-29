@@ -24,7 +24,6 @@ TOP_URL = (
     "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
     "Market_Center.getHQNodeData?page={page}&num=80&sort=amount&asc=0&node=hs_a&symbol=&_s_r_a=page"
 )
-QUOTE_URL = "https://hq.sinajs.cn/list={symbols}"
 
 
 THEMES = {
@@ -114,8 +113,24 @@ MAIN_THEME_KEYS = (
     "电控",
     "量子科技",
 )
+PRIMARY_THEME_KEYS = (
+    "PCB",
+    "CPO",
+    "光通信",
+    "光模块",
+    "光器件",
+    "光芯片",
+    "半导体",
+    "存储",
+    "AI",
+    "服务器",
+    "高速连接器",
+    "玻璃基板",
+    "液冷",
+)
 FRONT_ROW_AMOUNT_YI = 50
 FRONT_ROW_RANK = 80
+COOLING_CODES = {}
 
 
 def fetch_json(url: str):
@@ -134,6 +149,40 @@ def fnum(value, default=0.0):
         return default if math.isnan(value) else value
     except Exception:
         return default
+
+
+def load_backtest_cooling_codes(runs_root: Path):
+    backtests_dir = runs_root / "ashare-trend-buy" / "backtests"
+    if not backtests_dir.exists():
+        return {}
+    files = sorted(backtests_dir.glob("*trend_buy*.csv"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if not files:
+        return {}
+
+    history = {}
+    try:
+        with files[0].open("r", encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                rec_date = row.get("recommend_date", "")
+                code = row.get("code", "")
+                if not code or not rec_date or rec_date >= SCREENING_DATE:
+                    continue
+                ret = fnum(row.get("to_now_pct"), None)
+                if ret is None:
+                    continue
+                item = history.setdefault(code, {"name": row.get("name", ""), "returns": []})
+                item["returns"].append(ret)
+    except Exception:
+        return {}
+
+    cooling = {}
+    for code, item in history.items():
+        returns = item["returns"]
+        losses = [ret for ret in returns if ret < 0]
+        avg_ret = mean(returns)
+        if len(returns) >= 2 and len(losses) >= 2 and avg_ret <= -5:
+            cooling[code] = f"回测连续走弱：{len(losses)}/{len(returns)}次为负，均值{avg_ret:.2f}%"
+    return cooling
 
 
 def fetch_sina_top200():
@@ -213,61 +262,6 @@ def fetch_kline(symbol: str):
     if len(rows) < 60:
         raise RuntimeError(f"日K不足: {len(rows)}")
     return rows, payload
-
-
-def fetch_realtime_quotes(symbols):
-    if NO_NETWORK or not symbols:
-        return {}
-    req = urllib.request.Request(
-        QUOTE_URL.format(symbols=",".join(symbols)),
-        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"},
-    )
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        text = resp.read().decode("gbk", "replace")
-
-    quotes = {}
-    for line in [line for line in text.splitlines() if line.strip()]:
-        try:
-            symbol = line.split("hq_str_", 1)[1].split("=", 1)[0]
-            data = line.split('="', 1)[1].rsplit('"', 1)[0]
-        except Exception:
-            continue
-        fields = data.split(",")
-        if len(fields) < 32 or not fields[0]:
-            continue
-        quote = {
-            "name": fields[0],
-            "date": fields[30],
-            "time": fields[31],
-            "open": fnum(fields[1]),
-            "preclose": fnum(fields[2]),
-            "close": fnum(fields[3]),
-            "high": fnum(fields[4]),
-            "low": fnum(fields[5]),
-            "volume": fnum(fields[8]),
-            "amount": fnum(fields[9]),
-        }
-        if quote["date"] and quote["close"] > 0:
-            quotes[symbol] = quote
-    return quotes
-
-
-def merge_screening_quote(krows, quote):
-    if not quote or quote.get("date") != SCREENING_DATE:
-        return krows
-    quote_row = {
-        "date": quote["date"],
-        "open": quote["open"] or quote["close"],
-        "high": quote["high"] or quote["close"],
-        "low": quote["low"] or quote["close"],
-        "close": quote["close"],
-        "volume": quote["volume"],
-    }
-    if krows and krows[-1]["date"] == quote_row["date"]:
-        return [*krows[:-1], quote_row]
-    if krows and krows[-1]["date"] < quote_row["date"]:
-        return [*krows, quote_row]
-    return krows
 
 
 def mean(values):
@@ -419,6 +413,7 @@ def score_candidate(row, ind):
     ma5, ma10, ma20, ma60 = ind["ma5"], ind["ma10"], ind["ma20"], ind["ma60"]
     theme = infer_theme(row)
     main_theme = any(key in theme for key in MAIN_THEME_KEYS)
+    primary_theme = any(key in theme for key in PRIMARY_THEME_KEYS)
     front_row = main_theme and row["rank"] <= FRONT_ROW_RANK and row["amount_yi"] >= FRONT_ROW_AMOUNT_YI
     trend_stock = ma20 > ma60 and ma10 >= ma20 * 0.98
     ma20_state = ma20_stabilization_state(ind)
@@ -448,7 +443,7 @@ def score_candidate(row, ind):
     vol += 3 if not (row["changepercent"] < -4 and vr > 1.5) else 0
     vol += 3 if row["turnoverratio"] <= 20 else 1
 
-    theme_score = 15 if front_row else 13 if main_theme else 8
+    theme_score = 15 if front_row and primary_theme else 13 if primary_theme else 11 if main_theme else 8
     support = 0
     support += 5 if close > ma20 else 1
     support += 4 if ind["dist20_pct"] <= 15 else 1
@@ -477,64 +472,81 @@ def score_candidate(row, ind):
     total = trend + setup + vol + theme_score + support + fundamental + tech + liquidity
 
     flags = []
+    severe_flags = []
     overheat_flags = []
-    invalid_flags = []
+    cooling_reason = COOLING_CODES.get(row["code"])
     if close < ma20 and not ma5 > ma10:
         flags.append("收盘低于20日线且短均线未修复")
     if ind["dist20_pct"] > 25:
         flags.append("距20日线过远")
-        overheat_flags.append("距20日线过远")
+        severe_flags.append("距20日线过远")
+    if ind["dist20_pct"] > 18:
+        overheat_flags.append("距20日线超过18%")
+    if row["changepercent"] > 6:
+        overheat_flags.append("单日涨幅超过6%")
+    if row["turnoverratio"] > 18:
+        overheat_flags.append("换手偏高")
+    if ind["j"] > 100:
+        overheat_flags.append("KDJ高位偏热")
+    if vr > 2.8:
+        overheat_flags.append("量比过高")
     if row["changepercent"] > 9 and ind["dist20_pct"] > 10:
         flags.append("单日大涨后未整理")
-        overheat_flags.append("单日大涨后未整理")
+        severe_flags.append("单日大涨后未整理")
     if row["changepercent"] < -5 and vr > 1.3:
         flags.append("放量下跌")
-        invalid_flags.append("放量下跌")
+        severe_flags.append("放量下跌")
     if "高位死叉" in ind["kdj"]:
         flags.append("KDJ高位死叉")
-        if close < ma10 or row["changepercent"] < -2:
-            invalid_flags.append("KDJ高位死叉叠加价格走弱")
+        severe_flags.append("KDJ高位死叉")
     if "死叉" in ind["macd"] and close < ma20:
         flags.append("MACD死叉叠加破位")
-        invalid_flags.append("MACD死叉叠加破位")
+        severe_flags.append("MACD死叉叠加破位")
     if not front_row and not main_theme and row["rank"] > 120:
         flags.append("细分前排/人气不足")
+    if not primary_theme and total >= 85:
+        flags.append("非当前验证主线，A档需回避")
+    if cooling_reason:
+        flags.append(cooling_reason)
 
-    if invalid_flags:
+    a_ready = (
+        total >= 85
+        and not flags
+        and not overheat_flags
+        and primary_theme
+        and row["changepercent"] <= 4
+        and ind["dist20_pct"] <= 12
+        and row["turnoverratio"] <= 15
+        and vr <= 2.2
+    )
+    if severe_flags:
         tier = "剔除"
-        state = "X-失效剔除"
-    elif overheat_flags and total >= 75 and (front_row or main_theme):
-        tier = "过热跟踪"
-        state = "X-过热强势"
-    elif total >= 85 and not flags:
+        state = "X-硬性剔除"
+    elif a_ready:
         tier = "A"
         state = "A-确认观察"
-    elif total >= 75:
+    elif total >= 78 and main_theme and not cooling_reason:
         tier = "B"
-        if row["changepercent"] > 6 or ind["dist20_pct"] > 15 or (breakout and (front_row or main_theme)):
-            state = "B-强势延续"
-        else:
-            state = "B-等待回踩"
-    elif total >= 65:
+        state = "B-等待买点"
+    elif overheat_flags and total >= 75:
+        tier = "过热跟踪"
+        state = "X-过热强势"
+    elif total >= 68:
         tier = "C"
-        if row["changepercent"] > 5 or ind["ret5_pct"] > 8:
-            state = "C-低确定性高弹性"
-        else:
-            state = "C-只跟踪"
+        state = "C-只跟踪"
     else:
         tier = "剔除"
-        state = "X-失效剔除"
+        state = "X-低胜率剔除"
 
     downgrade_reasons = []
-    if tier == "A" and (row["changepercent"] > 6 or ind["dist20_pct"] > 18 or row["turnoverratio"] > 18):
-        if row["changepercent"] > 6:
-            downgrade_reasons.append("短线涨幅偏大")
-        if ind["dist20_pct"] > 18:
-            downgrade_reasons.append("距20日线偏远")
-        if row["turnoverratio"] > 18:
-            downgrade_reasons.append("换手偏高")
-        tier = "B"
-        state = "B-强势延续"
+    if overheat_flags and tier in ("A", "B"):
+        downgrade_reasons.extend(overheat_flags)
+        tier = "过热跟踪"
+        state = "X-过热强势"
+    if cooling_reason and tier in ("A", "B", "C", "过热跟踪"):
+        downgrade_reasons.append(cooling_reason)
+        tier = "C"
+        state = "C-冷却观察"
 
     support_text = f"10日线{ma10:.2f}/20日线{ma20:.2f}；收盘跌破20日线且1-2日不能收回则降级"
     buy_watch = "观察回踩10/20日线不破后的温和放量转强"
@@ -546,17 +558,13 @@ def score_candidate(row, ind):
         buy_watch = "观察突破后不快速跌回，或回踩突破位缩量企稳"
     if ind["dist20_pct"] > 18 or row["changepercent"] > 6:
         buy_watch = "不追高，等待3-8日缩量整理并靠近10/20日线"
-    if tier == "过热跟踪":
-        buy_watch = "不追高，保留强势跟踪；等待首次分歧后3-8日缩量整理，或回踩10/20日线不破再评估"
-    elif state == "B-强势延续":
-        buy_watch = "只观察强势延续确认：放量突破后不快速跌回，或盘中分歧后收回关键位"
 
-    if invalid_flags:
-        tier_reason = "失效剔除：" + "；".join(invalid_flags)
-    elif tier == "过热跟踪":
-        tier_reason = "过热强势跟踪：" + "；".join(overheat_flags)
+    if severe_flags:
+        tier_reason = "硬性剔除：" + "；".join(severe_flags)
     elif downgrade_reasons:
-        tier_reason = "A档降B：" + "；".join(downgrade_reasons)
+        tier_reason = "胜率规则降级：" + "；".join(downgrade_reasons)
+    elif overheat_flags:
+        tier_reason = "过热跟踪：" + "；".join(overheat_flags)
     elif flags:
         tier_reason = "降级观察：" + "；".join(flags)
     elif total < 65:
@@ -593,9 +601,7 @@ def score_candidate(row, ind):
         "support": support_text,
         "buy_watch": buy_watch,
         "flags": "；".join(flags),
-        "overheat_flags": "；".join(overheat_flags),
-        "invalid_flags": "；".join(invalid_flags),
-        "severe_flags": "；".join(invalid_flags),
+        "severe_flags": "；".join(severe_flags),
         "ma20_state": ma20_state,
         "front_row_state": "细分前排/高人气" if front_row else "主线活跃" if main_theme else "辨识度待验证",
         "structure": "平台突破/前高附近" if breakout else ma20_state if ma20_stabilizing else "均线回踩附近" if near_support else "偏离均线较远" if ind["dist20_pct"] > 18 else "震荡修复",
@@ -658,8 +664,7 @@ def generate_report(rows, summary):
     latest_date_text = "、".join(f"{day}:{count}只" for day, count in latest_dates.items()) if latest_dates else "无"
     source_label = candidate_source_label()
     missing_count = summary["candidate_count"] - summary["calculated_count"]
-    hot_tracked = [r for r in hot_rows if r.get("overheat_flags")]
-    hard_removed = [r for r in x_rows if r.get("invalid_flags")]
+    hard_removed = [r for r in x_rows if r.get("severe_flags")]
 
     lines = []
     lines.append("# A股右侧趋势买入标准筛选结果")
@@ -670,12 +675,12 @@ def generate_report(rows, summary):
     lines.append("")
     lines.append("## 数据说明")
     lines.append("")
-    lines.append(f"- 数据来源：候选池 `{source_label}`；日K来自新浪 240 分钟日线接口，若日K接口滞后则用新浪收盘/实时行情补齐筛选日OHLC；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
+    lines.append(f"- 数据来源：候选池 `{source_label}`；日K来自新浪 240 分钟日线接口；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
     lines.append(f"- 数据完整性：候选 {summary['candidate_count']} 只，完成指标计算 {summary['calculated_count']} 只，未完成 {missing_count} 只；最新K线日期分布：{latest_date_text}。")
     lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、20日线企稳分层、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位、板块内成交前排/人气和右侧趋势评分。")
+    lines.append("- 回测修正：A档必须同时满足主线纯度、不过热、靠近支撑、量能可控；B档作为主要等待池；C档和回测连续走弱标的只跟踪，不进入正式短名单。")
     lines.append(f"- 市场环境：候选主线集中在 {theme_text}；右侧策略优先保留趋势结构完整、调整到20日线附近企稳、靠近支撑或突破后可确认的细分前排标的。")
-    lines.append("- 状态机：A为确认观察，B分为等待回踩/强势延续，C保留低确定性高弹性观察，X分为过热强势跟踪和失效剔除。")
-    lines.append("- 剔除解释：距20日线过远、单日大涨未整理等不再直接等同失效；主线前排高分票会进入过热跟踪，放量下跌、MACD/KDJ破位才优先归入失效剔除。")
+    lines.append("- 剔除解释：剔除档按原始评分展示，高分剔除通常是触发距20日线过远、单日大涨未整理、放量下跌、MACD/KDJ破位等硬性风险。")
     lines.append("- 限制说明：本脚本侧重技术结构与主线归类，基本面/公告证据只作主题逻辑提示；最终报告每个档位最多展示5只，过程数据不归档到 runs。")
     lines.append("")
     lines.append("## 一、筛选结论")
@@ -684,14 +689,11 @@ def generate_report(rows, summary):
     lines.append(f"- A档，重点观察（最多5只）：{names(display_a)}")
     lines.append(f"- B档，等待买点（最多5只）：{names(display_b)}")
     lines.append(f"- C档，只跟踪不追（最多5只）：{names(display_c)}")
-    lines.append(f"- 过热强势跟踪（最多5只）：{names(display_hot)}")
-    lines.append(f"- 失效剔除/暂不追（最多5只）：{names(display_x)}")
-    if hot_tracked:
-        hot_text = "；".join(f"{r['name']}({r['overheat_flags']})" for r in display_hot if r.get("overheat_flags"))
-        lines.append(f"- 过热跟踪原因：{hot_text or '详见核心表格和逐个点评'}")
+    lines.append(f"- 过热跟踪，不追高（最多5只）：{names(display_hot)}")
+    lines.append(f"- 剔除/暂不追（最多5只）：{names(display_x)}")
     if hard_removed:
-        hard_text = "；".join(f"{r['name']}({r['invalid_flags']})" for r in display_x if r.get("invalid_flags"))
-        lines.append(f"- 失效剔除原因：{hard_text or '详见核心表格和逐个点评'}")
+        hard_text = "；".join(f"{r['name']}({r['severe_flags']})" for r in display_x if r.get("severe_flags"))
+        lines.append(f"- 高分剔除原因：{hard_text or '详见核心表格和逐个点评'}")
     lines.append("")
     lines.append("## 二、核心表格")
     lines.append("")
@@ -703,8 +705,8 @@ def generate_report(rows, summary):
         vol = f"量比{r['vol_ratio']:.2f}；成交额排名{r['rank']}"
         tech = f"{r['trend_state']}，{r['structure']}，距20日线{r['dist20_pct']:.2f}%"
         logic = f"{r['theme']}主线；{r['front_row_state']}；{r['tier_reason']}；基本面需另行复核"
-        score_text = f"{r['score']}（原始）" if r["tier"] in ("剔除", "过热跟踪") else str(r["score"])
-        buy_watch_text = f"暂不观察；{r['tier_reason']}" if r["tier"] == "剔除" and r.get("invalid_flags") else r["buy_watch"]
+        score_text = f"{r['score']}（原始）" if r["tier"] == "剔除" and r.get("severe_flags") else str(r["score"])
+        buy_watch_text = f"暂不观察；{r['tier_reason']}" if r["tier"] == "剔除" and r.get("severe_flags") else r["buy_watch"]
         lines.append(
             f"| {r['tier']} | {r.get('state', r['tier'])} | {r['rank']} | {r['name']} | {r['code']} | {r['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {r['support']} | {score_text} | {buy_watch_text} |"
         )
@@ -718,7 +720,7 @@ def generate_report(rows, summary):
             f"换手{r['turnoverratio']:.2f}%、距20日线{r['dist20_pct']:.2f}%。趋势结构是{r['trend_state']}、{r['structure']}；"
             f"MACD/KDJ为{r['macd']}、{r['kdj']}，只作辅助确认。量价/资金看量比{r['vol_ratio']:.2f}。"
             f"证据/逻辑为{r['theme']}主线、{r['front_row_state']}，基本面需结合公告和财报复核。买点观察是{r['buy_watch']}；"
-            f"支撑/失效看{r['support']}。状态为{r.get('state', r['tier'])}，档位原因：{r['tier_reason']}。主要风险：{risk}。"
+            f"支撑/失效看{r['support']}。档位原因：{r['tier_reason']}。主要风险：{risk}。"
         )
         lines.append("")
     lines.append("## 四、最终短名单")
@@ -727,8 +729,8 @@ def generate_report(rows, summary):
     lines.append(f"最优先观察：{names(display_a)}")
     lines.append(f"次优先观察：{names(display_b)}")
     lines.append(f"只跟踪不急买：{names(display_c)}")
-    lines.append(f"过热强势跟踪：{names(display_hot)}")
-    lines.append(f"失效剔除但保留复盘：{names(display_x)}")
+    lines.append(f"过热强势只等待整理：{names(display_hot)}")
+    lines.append(f"剔除但跟踪板块强度：{names(display_x)}")
     lines.append("```")
     lines.append("")
     lines.append("## 五、买点观察与失效条件")
@@ -737,8 +739,6 @@ def generate_report(rows, summary):
     lines.append("- 均线回踩：优先观察回踩10日/20日线不破，缩量企稳后温和放量转强。")
     lines.append("- 20日线企稳：趋势票调整到或接近20日均线，缩量止跌、收盘不破或1-2日快速收回后再评估。")
     lines.append("- 平台突破：观察突破后不快速跌回平台，或回踩突破位缩量企稳。")
-    lines.append("- 强势延续：主线前排若放量突破且不快速跌回，可作为B-强势延续观察；不等同追高，仍需盘中承接或回落收回关键位确认。")
-    lines.append("- 过热跟踪：距20日线过远或单日大涨未整理的高分主线票不追高，但保留跟踪，等待首次分歧后的二次确认。")
     lines.append("- 强势二买：大阳线后等待3-8日缩量整理，不破10日/20日线再评估。")
     lines.append("- 统一失效：收盘跌破20日线且1-2日不能收回、放量破平台、KDJ高位死叉叠加价格走弱、主线板块放量破位。")
     lines.append("")
@@ -766,12 +766,13 @@ def parse_args():
 
 
 def configure(args):
-    global RUN_DIR, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK
+    global RUN_DIR, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK, COOLING_CODES
     SCREENING_DATE = args.date
     NO_NETWORK = bool(args.no_network)
     runs_root = Path(args.runs_dir)
     if not runs_root.is_absolute():
         runs_root = ROOT / runs_root
+    COOLING_CODES = load_backtest_cooling_codes(runs_root)
     RUN_DIR = runs_root / "ashare-trend-buy" / SCREENING_DATE
     RUN_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -790,12 +791,10 @@ def main():
     args = parse_args()
     configure(args)
     candidates = read_top200()
-    quote_map = fetch_realtime_quotes([row["symbol"] for row in candidates])
     results = []
     for row in candidates:
         try:
             krows, _payload = fetch_kline(row["symbol"])
-            krows = merge_screening_quote(krows, quote_map.get(row["symbol"]))
             ind = indicators(krows)
             results.append(score_candidate(row, ind))
         except Exception as exc:
@@ -816,7 +815,7 @@ def main():
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     tier_order = {"A": 5, "B": 4, "C": 3, "过热跟踪": 2, "剔除": 1}
     for row in sorted(calculated, key=lambda r: (tier_order.get(r["tier"], 0), r["score"]), reverse=True)[:25]:
-        print(row["tier"], row.get("state", ""), row["score"], row["code"], row["name"], row["theme"], row["date"])
+        print(row["tier"], row["score"], row["code"], row["name"], row["theme"], row["date"])
 
 
 if __name__ == "__main__":
