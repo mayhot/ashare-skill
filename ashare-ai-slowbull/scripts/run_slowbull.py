@@ -1,14 +1,17 @@
-"""Run the ashare-ai-slowbull post-close screen and write the final report only.
+"""Run the ashare-ai-slowbull post-close screen and write reports.
 
-The script intentionally keeps raw market data in memory. The only persisted
-artifact is runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md.
+The script intentionally keeps raw market data in memory. It persists the final
+dated report and then refreshes rolling backtest_report artifacts for the
+previous recommendation dates.
 """
 
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import re
+import sys
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -35,6 +38,7 @@ class Segment:
 # added here when their evidence becomes strong enough.
 FRONT_ROW_UNIVERSE: dict[str, Segment] = {
     "688981": Segment("B", "晶圆代工/国产半导体锚", 5),
+    "002156": Segment("S", "先进封测/Chiplet/AMD链", 5),
     "300502": Segment("S", "光模块/高速光通信", 5),
     "603986": Segment("A", "存储芯片/MCU", 5),
     "300476": Segment("S", "AI PCB/高多层板", 5),
@@ -71,6 +75,9 @@ FRONT_ROW_UNIVERSE: dict[str, Segment] = {
     "688629": Segment("S", "高速连接器/背板连接", 4),
     "688048": Segment("S", "光芯片/激光芯片", 3),
     "601208": Segment("A", "电子树脂/绝缘材料", 3),
+    "600183": Segment("A", "CCL/覆铜板/AI服务器材料", 5),
+    "603256": Segment("A", "电子布/玻纤布", 4),
+    "300408": Segment("B", "MLCC/陶瓷材料", 3),
     "688082": Segment("A", "半导体设备/清洗设备", 5),
     "301526": Segment("A", "玻纤/电子布上游", 3),
     "300567": Segment("A", "检测量测设备", 4),
@@ -82,11 +89,20 @@ FRONT_ROW_UNIVERSE: dict[str, Segment] = {
 }
 
 
+# Backtest 2026-05-20..2026-05-27 showed better follow-through in
+# advanced packaging, AI PCB, CCL/electronic cloth, and mild pullbacks.
+PROVEN_EDGE_CODES = {"002156", "002185", "600584", "002463", "600183", "603256", "300408", "301526"}
+CAUTION_CODES = {"688313", "688498", "002837", "002050", "688110", "688072", "002008"}
+EDGE_DIRECTIONS = ("先进封测", "封测", "Chiplet", "PCB", "CCL", "覆铜板", "电子布", "玻纤", "陶瓷材料")
+CAUTION_DIRECTIONS = ("液冷", "温控", "CPO光源", "薄膜沉积", "存储芯片")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ashare-ai-slowbull screen.")
     parser.add_argument("--trade-date", help="Trading date, default: China local date.")
     parser.add_argument("--output-root", default="runs/ashare-ai-slowbull")
     parser.add_argument("--skip-post-close-check", action="store_true")
+    parser.add_argument("--skip-backtest-report", action="store_true")
     return parser.parse_args()
 
 
@@ -246,6 +262,50 @@ def has_indicators(ind: dict[str, Any]) -> bool:
     return bool(ind and ind.get("ma20"))
 
 
+def direction_has(segment: Segment, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in segment.direction for keyword in keywords)
+
+
+def backtest_edge_adjustment(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
+    """Small 2026-05 backtest-informed adjustment, bounded to avoid overfit."""
+    code = str(row.get("code", ""))
+    rank = int(row["rank"])
+    change = to_float(row.get("changepercent"))
+    adjustment = 0
+
+    if code in PROVEN_EDGE_CODES:
+        adjustment += 4
+    elif direction_has(segment, EDGE_DIRECTIONS):
+        adjustment += 2
+
+    if code in CAUTION_CODES:
+        adjustment -= 5
+    elif direction_has(segment, CAUTION_DIRECTIONS):
+        adjustment -= 2
+
+    if -5 <= change <= 3 and rank <= 100:
+        adjustment += 3
+    elif 3 < change <= 6 and direction_has(segment, EDGE_DIRECTIONS):
+        adjustment += 1
+    elif change >= 9.5:
+        adjustment -= 4
+
+    if 101 <= rank <= 150:
+        adjustment -= 2
+
+    if has_indicators(ind):
+        dev20 = float(ind["dev20"])
+        rsi_value = float(ind["rsi"])
+        if dev20 > 25 or rsi_value > 80:
+            adjustment -= 4
+        elif dev20 > 18 or rsi_value > 75:
+            adjustment -= 2
+        if code in PROVEN_EDGE_CODES and -3 <= dev20 <= 12 and rsi_value <= 75:
+            adjustment += 2
+
+    return max(-8, min(8, adjustment))
+
+
 def score(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
     rank = int(row["rank"])
     change = to_float(row.get("changepercent"))
@@ -285,11 +345,35 @@ def score(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> int:
         + max(0, crowding)
         + trend
         + min(15, fundamentals)
+        + backtest_edge_adjustment(row, segment, ind)
     )
     return round(total)
 
 
+def a_eligible(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> bool:
+    code = str(row.get("code", ""))
+    rank = int(row["rank"])
+    change = to_float(row.get("changepercent"))
+    market_cap_yi = to_float(row.get("mktcap")) / 10000
+
+    if rank > 100 or not (500 <= market_cap_yi <= 2000):
+        return False
+    if change >= 9.5:
+        return False
+    if code in CAUTION_CODES and code not in PROVEN_EDGE_CODES:
+        return False
+    if direction_has(segment, CAUTION_DIRECTIONS) and code not in PROVEN_EDGE_CODES:
+        return False
+    if has_indicators(ind):
+        dev20 = float(ind["dev20"])
+        rsi_value = float(ind["rsi"])
+        if dev20 > 18 or rsi_value > 78:
+            return False
+    return True
+
+
 def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
+    segment = FRONT_ROW_UNIVERSE.get(row.get("code"))
     change = to_float(row.get("changepercent"))
     market_cap_yi = to_float(row.get("mktcap")) / 10000
     dev20 = float(ind.get("dev20", 0)) if has_indicators(ind) else None
@@ -305,7 +389,9 @@ def grade(row: dict[str, Any], numeric_score: int, ind: dict[str, Any]) -> str:
         return "B" if numeric_score >= 78 else "C"
     if market_cap_yi < 500:
         return "C" if numeric_score >= 70 else "剔除"
-    return "A" if numeric_score >= 85 else "B" if numeric_score >= 75 else "C" if numeric_score >= 65 else "剔除"
+    if segment and not a_eligible(row, segment, ind):
+        return "B" if numeric_score >= 75 else "C" if numeric_score >= 65 else "剔除"
+    return "A" if numeric_score >= 90 else "B" if numeric_score >= 76 else "C" if numeric_score >= 66 else "剔除"
 
 
 def tech_summary(ind: dict[str, Any]) -> str:
@@ -343,10 +429,53 @@ def buy_observation(ind: dict[str, Any]) -> str:
     return "等待回踩或平台确认"
 
 
+def position_ratio(item: dict[str, Any]) -> str:
+    """Research sizing guardrail for each displayed candidate."""
+    grade_name = item["grade"]
+    if grade_name == "剔除":
+        return "0%"
+    row = item["row"]
+    ind = item["indicators"]
+    score = int(item["score"])
+    change = to_float(row.get("changepercent"))
+    dev20 = float(ind.get("dev20", 0)) if has_indicators(ind) else 0.0
+    rsi_value = float(ind.get("rsi", 0)) if has_indicators(ind) else 0.0
+
+    overheated = change >= 7.0 or dev20 > 15 or rsi_value > 75
+    near_ma20 = has_indicators(ind) and -3 <= dev20 <= 8
+
+    if grade_name == "A":
+        if score >= 95 and near_ma20 and not overheated:
+            return "4%-5%"
+        if score >= 90 and not overheated:
+            return "3%-4%"
+        return "2%-3%"
+    if grade_name == "B":
+        if score >= 85 and near_ma20 and not overheated:
+            return "2%-3%"
+        return "1%-2%"
+    if grade_name == "C":
+        return "0%-1%"
+    return "0%"
+
+
 def support_text(ind: dict[str, Any]) -> str:
     if not has_indicators(ind):
         return "跌破关键均线降级"
     return f"20日线约{float(ind['ma20']):.2f}；跌破后2-3日不能收回则降级"
+
+
+def backtest_profile_text(row: dict[str, Any], segment: Segment, ind: dict[str, Any]) -> str:
+    adjustment = backtest_edge_adjustment(row, segment, ind)
+    if adjustment >= 4:
+        return "回测因子加分：验证细分/温和形态"
+    if adjustment <= -4:
+        return "回测因子降级：高波动/过热/低胜率形态"
+    if adjustment > 0:
+        return "回测因子小幅加分"
+    if adjustment < 0:
+        return "回测因子小幅降权"
+    return "回测因子中性"
 
 
 def fmt_yi(value: Any) -> str:
@@ -385,9 +514,9 @@ def build_report(
         "结果类型：研究观察池，不是最终买入名单",
         f"run_time：{run_time}",
         f"quote_ticktime：{quote_ticktime}",
-        "skill_version：ashare-ai-slowbull-postclose-v2+run_slowbull",
+        "skill_version：ashare-ai-slowbull-postclose-v4+backtest-edge",
         "stock_pool_version：frontrow-ai-hardware-chip-equipment-storage-v1",
-        "threshold_version：postclose-hardcap-v1+ma20-frontrow",
+        "threshold_version：postclose-hardcap-v3+backtest-edge-20260520-0527",
         "fallback_used：False",
         "post_close_validated：True",
         "",
@@ -396,19 +525,19 @@ def build_report(
         f"- 数据完整性：有效A股前200记录 {top_count} 条；候选交集 {len(candidates)} 条；前排样本 ticktime 覆盖到 {quote_ticktime}。",
         "- 指标口径：MA10/20/30、RSI14、MACD(12,26,9)、KDJ(9,3,3)由日K计算；MACD/KDJ只作辅助确认，不作单独买卖依据。",
         "- 市场环境：AI硬件链按成交额前排强度、核心票位置和过热程度判断；若涨停和大阳线密集，优先等待20日线企稳而非追涨。",
-        "- 附加评估：已检查趋势票是否回踩20日线企稳；已优先排序行业细分中公认知名度高、人气高的前排。",
+        "- 附加评估：已检查趋势票是否回踩20日线企稳；已优先排序行业细分中公认知名度高、人气高的前排；已纳入2026-05-20至2026-05-27回测因子。",
         "- 限制说明：基本面证据以公开业务定位和产业链关系为主，未逐条展开财报公告原文；对涨停、过热、市值过大的票执行硬降级或板块锚剔除。",
         "",
         "## 一、筛选结论",
-        "- 市场环境：芯片、半导体设备、存储和AI硬件上游强度高时，重点找不过热的细分前排，并等待趋势票回踩20日线附近企稳。",
+        "- 市场环境：芯片、半导体设备、存储和AI硬件上游强度高时，重点找不过热的细分前排；回测显示温和回踩和先进封测/PCB/CCL/电子布更容易延续，追高与高波动CPO光源需降权。",
         f"- A档，重点观察：{names(candidates, 'A')}",
         f"- B档，等待买点：{names(candidates, 'B')}",
         f"- C档，只跟踪不追：{names(candidates, 'C')}",
         f"- 剔除/板块锚：{names(candidates, '剔除', 8)}",
         "",
         "## 二、核心表格",
-        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 买点观察 |",
-        "|---|---:|---|---:|---|---|---|---|---|---|---:|---|",
+        "| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | 量价/资金 | 证据/逻辑 | 回测因子 | 支撑/失效 | 评分 | 参考仓位 | 买点观察 |",
+        "|---|---:|---|---:|---|---|---|---|---|---|---|---:|---:|---|",
     ]
 
     for item in display:
@@ -422,7 +551,7 @@ def build_report(
             f"| {item['grade']} | {row['rank']} | {row['name']} | {row['code']} | "
             f"{segment.direction} | 市值{fmt_yi(row.get('mktcap'))}；成交额第{row['rank']}；涨跌幅{fmt_pct(row.get('changepercent'))} | "
             f"{tech_summary(ind)} | 成交额{fmt_amount(row.get('amount'))}；细分前排人气{segment.front_row}/5 | "
-            f"{evidence} | {support_text(ind)} | {item['score']} | {buy_observation(ind)} |"
+            f"{evidence} | {backtest_profile_text(row, segment, ind)} | {support_text(ind)} | {item['score']} | {position_ratio(item)} | {buy_observation(ind)} |"
         )
 
     detail_items = [item for item in candidates if item["grade"] == "A"][:5]
@@ -437,7 +566,8 @@ def build_report(
             f"- **{row['name']}（{row['code']}，{item['grade']}档）**：{segment.direction}。"
             f"成交额第{row['rank']}、{fmt_amount(row.get('amount'))}，市值约{fmt_yi(row.get('mktcap'))}，涨跌幅{fmt_pct(row.get('changepercent'))}。"
             f"{tech_summary(ind)}。前排/人气评分 {segment.front_row}/5。"
-            f"买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
+            f"{backtest_profile_text(row, segment, ind)}。"
+            f"参考仓位：{position_ratio(item)}。买点观察：{buy_observation(ind)}。失效：{support_text(ind)}；若板块从主升加速转为退潮需降级。"
         )
 
     lines.extend(
@@ -453,6 +583,9 @@ def build_report(
             "",
             "## 五、买点观察与失效条件",
             "- 趋势票机会：已经形成趋势的票，若回踩20日均线附近并缩量企稳、重新收回短均线或温和放量转强，才进入重点观察；不把单日大涨本身当作买点。",
+            "- 回测调权：先进封测、AI PCB、CCL/覆铜板、电子布/玻纤布在本轮验证中胜率更高；液冷、独立CPO光源、薄膜沉积设备、单日涨幅过热的存储芯片需降低档位或只等二次确认。",
+            "- 仓位纪律：参考仓位为研究型单票观察比例；A档通常不超过5%，B档通常不超过3%，C档最多跟踪仓，剔除为0%；若次日验证走弱或跌破失效位，应按规则降档或降仓。",
+            "- A档纪律：A档必须满足市值500-2000亿、成交额前100、非涨停/非极端过热、非低胜率高波动形态；否则即使分数高也放入B档等待买点。",
             "- 前排优先：同一细分方向优先看公认知名度高、人气高、成交额持续靠前的前排；冷门后排只有在趋势和证据显著更强时才提高优先级。",
             "- 平台突破：横盘5-15个交易日后温和放量突破，并且次日不跌回平台。",
             "- 强势二买：大阳线后3-8日缩量整理，不破10日/20日线，再次放量转强。",
@@ -463,6 +596,17 @@ def build_report(
         ]
     )
     return "\n".join(lines) + "\n"
+
+
+def run_rolling_backtest_report(output_root: str, trade_date: str) -> list[Path]:
+    script_path = Path(__file__).with_name("backtest_slowbull.py")
+    spec = importlib.util.spec_from_file_location("backtest_slowbull", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load backtest script: {script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.generate_backtest_reports(Path(output_root), end_date=trade_date, lookback=10)
 
 
 def main() -> None:
@@ -519,6 +663,9 @@ def main() -> None:
         encoding="utf-8",
     )
     print(out_path)
+    if not args.skip_backtest_report:
+        for path in run_rolling_backtest_report(args.output_root, trade_date):
+            print(path)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "Commit Code"
+  short_description: "Split runs and skill commits, then merge both into main"
+  default_prompt: "Use $commit-code to commit runs/ changes to the runs branch, other skill changes to the skill branch, then merge both branches into main."

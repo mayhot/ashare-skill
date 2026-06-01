@@ -54,7 +54,9 @@ Use a layered data approach. Do not scatter across many platforms unless a layer
 
 Operational script:
 
-- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, and writes only the final dated Markdown report.
+- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, writes the final dated Markdown report, then refreshes rolling `backtest_report` files for the previous 10 recommendation dates.
+- The built-in final backtest step uses `scripts/backtest_slowbull.py`, reads prior dated reports under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, writes per-date reports as `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD-backtest_report.md`, and writes aggregate reports under `runs/ashare-ai-slowbull/backtest_reports/` as `START_END_slowbull_backtest_report.md` plus `.csv`. Backtest return and win-rate metrics must use only actual market data from the next trading day onward; same-day price movement is screening context, not backtest performance.
+- Use `scripts/backtest_slowbull.py --root runs/ashare-ai-slowbull --end-date YYYY-MM-DD --lookback 10` only when regenerating the rolling backtest independently.
 - Use `generate_report.py` only when curated `data/meta.json` and `data/candidates.csv` already exist from another trusted workflow.
 - If an external K-line source is slow, prefer Sina `CN_MarketDataService.getKLineData` for lightweight MA/RSI/MACD/KDJ calculation before trying heavier fallback APIs.
 
@@ -218,8 +220,40 @@ Downgrade or exclude when any major risk dominates:
 13. Score the remaining names and assign A/B/C/excluded tiers.
 14. Track known AI hardware upstream names not in today's top 200 during analysis when useful, but do not archive gap/process files in `runs/`.
 15. Add buy-point observation and invalidation conditions as conditional scenarios, never as direct trading instructions.
-16. Generate the final report from structured in-memory data or temporary workspace artifacts when possible. Prefer `scripts/run_slowbull.py`, which does not persist raw top200 or process CSV files.
-17. Save only the final dated report under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, where `YYYY-MM-DD` is the trading date.
+16. Apply the backtest-informed win-rate filter before final tiering, using the standing 2026-05-20 to 2026-05-27 lessons plus the latest rolling `backtest_report` when available.
+17. Generate the final report from structured in-memory data or temporary workspace artifacts when possible. Prefer `scripts/run_slowbull.py`, which does not persist raw top200 or process CSV files.
+18. Save the final dated report under `runs/ashare-ai-slowbull/YYYY-MM-DD/YYYY-MM-DD.md`, where `YYYY-MM-DD` is the trading date.
+19. As the final step, backtest the previous 10 available recommendation dates, excluding the current `trade_date`, and generate `backtest_report` outputs using the same naming/location convention as prior回测: per-date files in each date directory and aggregate Markdown/CSV files under `runs/ashare-ai-slowbull/backtest_reports/`. Reports must include next-trading-day return, 5-trading-day return, to-date return, and win rate based only on next-day-or-later K-line data; samples without any post-recommendation trading day remain pending and do not count toward win rate.
+
+## Position Sizing Guardrails
+
+Every displayed recommended candidate must include a research-style reference position ratio. This is a risk-budget field for comparing candidates, not a personal trading instruction.
+
+- A档: normally 2%-5% per name. Use 4%-5% only when score is very high, the stock is close to key moving averages, not overheated, and the backtest profile is positive or neutral.
+- B档: normally 1%-3% per name. Use the upper end only when the setup is close to confirmation and not overheated.
+- C档: 0%-1% tracking only.
+- 剔除/sector anchor: 0%.
+- If same-day gain is high, MA20 deviation is large, RSI is overheated, the latest backtest profile is weak, or next-day validation fails, reduce the ratio by at least one band or set it to tracking only.
+- The total displayed A/B research exposure should remain conservative; do not use position ratios to override invalidation rules or buy-point discipline.
+
+## Backtest-Informed Win-Rate Filter
+
+The 2026-05-20 to 2026-05-27 `backtest_report` showed:
+
+- B档 had better follow-through than A档: B档 to-date average was +7.30% with 35/57 winners, while A档 was +2.59% with 13/23 winners.
+- Mild pullbacks worked better than blind momentum: recommendation-day moves from -5% to +3% had stronger later performance than many 3%-6% chase entries.
+- High-quality advanced packaging, AI PCB, CCL/electronic cloth/fiberglass, and selected material names produced the strongest continuation.
+- C档 often had high recommendation-day gains but weaker continuation, so high same-day gains should not be treated as confirmation.
+- Standalone high-volatility optical-chip/CPO-source names, liquid cooling, thin-film deposition equipment, and overheated storage-chip names created many drawdowns.
+
+Use these rules after the normal score:
+
+- A档 must be small and hard: normally turnover top 100, RMB 50-200 billion market cap, not same-day limit-up/overheated, and not a low-win-rate high-volatility profile.
+- Upgrade only validated profiles: advanced packaging/Chiplet, AI PCB, CCL/覆铜板, electronic cloth/fiberglass, and orderly mild pullbacks with active turnover.
+- Downgrade high-volatility profiles: standalone CPO light-source names, liquid cooling/temperature-control names, thin-film deposition equipment, and overheated storage chips unless fresh evidence is unusually strong.
+- Rank 101-150 candidates require extra evidence and usually cap at B/C unless they are in a validated high-win-rate material/PCB/packaging subsegment.
+- A single high score cannot override the filter; if the backtest profile is weak, keep the name in B档 waiting for confirmation or C档 tracking.
+- After each normal run, read the newly generated rolling `backtest_report` and update future judgment only when a pattern persists across multiple dates; do not overfit one isolated trading day.
 
 ## Scoring Model
 
@@ -228,7 +262,7 @@ Score out of 100:
 | Dimension | Weight | Guidance |
 |---|---:|---|
 | AI hardware upstream purity | 20 | Higher when closer to optical modules/chips, PCB, CCL, electronic cloth, packaging, connectors, liquid cooling, power, AI chips, storage chips, interface chips, semiconductor equipment, and storage chain, with stronger AI-hardware demand verification |
-| Turnover and fund behavior | 20 | Rank 1-100 scores highest; rank 101-200 scores next; look for sustained active turnover rather than one-day blowoff; prefer recognized front-row names in high-attention subsegments |
+| Turnover and fund behavior | 20 | Rank 1-100 scores highest; rank 101-200 scores next; A档 normally requires rank top 100 after the backtest filter; look for sustained active turnover rather than one-day blowoff |
 | Market-cap fit | 10 | RMB 50-200 billion scores best; too small or too large loses points |
 | Moderate gains and crowding | 15 | Penalize threshold breaches, excessive MA20 deviation, RSI/MACD/KDJ overheat, and high-volume stalling |
 | Trend quality | 20 | Slow bull, strong platform, multi-MA alignment, orderly volume, resilient pullbacks, MA20 pullback stabilization, healthy MACD/KDJ confirmation |
@@ -255,13 +289,13 @@ Tiering:
 <65：剔除
 ```
 
-Hard tier caps override the numeric score. A score above 85 does not permit A档 if the name violates the post-close freshness check, market-cap anchor rule, same-day limit-up/overheat cap, or upstream purity requirement.
+Hard tier caps override the numeric score. A score above 85 does not permit A档 if the name violates the post-close freshness check, market-cap anchor rule, same-day limit-up/overheat cap, upstream purity requirement, or backtest-informed win-rate filter.
 
 ## Tier Logic
 
-A档：core watchlist. Require clear upstream exposure, turnover top 200, RMB 50-200 billion market cap, non-extreme gains, slow-bull or strong-platform trend, and verified fundamental improvement. Must not be a server OEM or overheated absolute leader.
+A档：core watchlist. Require clear upstream exposure, turnover top 100 where possible, RMB 50-200 billion market cap, non-extreme gains, slow-bull or strong-platform trend, verified fundamental improvement, and a positive or neutral backtest profile. Must not be a server OEM or overheated absolute leader.
 
-B档：logic is strong, but timing is imperfect. Typical reasons: short-term gain is large, valuation is high, just had a volume spike, needs consolidation, or market cap is near/above RMB 200 billion.
+B档：logic is strong, but timing is imperfect. Typical reasons: short-term gain is large, valuation is high, just had a volume spike, needs consolidation, market cap is near/above RMB 200 billion, or the name has good elasticity but not enough win-rate evidence for A档.
 
 C档：track only. Typical reasons: strong industry position but too large, too hot, too extended, too crowded, or far from key moving averages.
 
@@ -319,11 +353,11 @@ Use the same report frame as `ashare-trend-buy` so both skills produce comparabl
 - 剔除/暂不追（最多5只）：
 
 ## 二、核心表格
-| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 买点观察 |
-|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|
+| 档位 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 回测因子 | 支撑/失效 | 评分 | 参考仓位 | 买点观察 |
+|---|---:|---|---:|---|---|---|---|---|---|---|---|---:|---:|---|
 
 ## 三、逐个点评
-逐只按同一顺序说明：方向/主线、关键数据、趋势结构、MACD/KDJ、量价/资金、证据/逻辑、买点观察、失效条件和主要风险。
+逐只按同一顺序说明：方向/主线、关键数据、趋势结构、MACD/KDJ、量价/资金、证据/逻辑、参考仓位、买点观察、失效条件和主要风险。
 
 ## 四、最终短名单
 ```text
@@ -350,6 +384,8 @@ Field guidance for this skill:
 - The report header must include `run_time`, `trade_date`, representative `quote_ticktime`, skill version, stock-pool version, threshold version, and fallback status.
 - `关键数据` should include total market cap, today's turnover rank, latest move, and whether it fits the RMB 50-200 billion preference.
 - `证据/逻辑` must include the evidence level: 强验证/中验证/弱验证/无验证.
+- `回测因子` must explain whether the 2026-05-20 to 2026-05-27 backtest profile upgrades, downgrades, or leaves the name neutral.
+- `参考仓位` must follow the Position Sizing Guardrails and remain a conditional research ratio, not a direct buy instruction.
 - `买点观察` must be conditional. Never write direct buy instructions.
 - `支撑/失效` must include at least one invalidation or downgrade condition for every A/B candidate.
 - Each displayed tier must contain no more than 5 names. Rank within each tier by score and evidence priority before truncating.
@@ -390,7 +426,7 @@ When the user asks for an example prompt, provide:
 3. 总市值优先500亿至2000亿；
 4. 剔除涨幅过大的头部AI硬件；
 5. 优先找慢牛趋势、强势盘整、基本面良好或有巨大变化的二线品种；
-6. 给出A/B/C分档、评分、入选理由、剔除理由和买点观察；
+6. 给出A/B/C分档、评分、参考仓位比例、入选理由、剔除理由和买点观察；
 7. 成交额数据限定为今日A股成交金额前200名；
 8. 仅在收盘后执行，并明确run_time、trade_date和quote_ticktime；
 9. 优先使用新浪财经接口按成交额amount倒序分页取满200条，但不在 runs/ 中保存原始数据或top200 CSV；
