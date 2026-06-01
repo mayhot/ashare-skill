@@ -1,50 +1,57 @@
-# ashare-ai-slowbull backtest_report for 2026-05-26
+# ashare-ai-slowbull 2026-05-26 推荐历史回测报告
 
-Source report folder date: 2026-05-26
-Source report header date(s): 2026-05-26
-Generated at: 2026-05-29 09:00:17 +08:00
-Latest close used for to-date: 2026-05-28
-Scope: A/B/C rows in the report core table. Excluded/sector-anchor rows are not counted as recommendations.
-Return definitions: recommendation-day = recommendation close / previous close - 1; 5-day = 5th later trading-day close / recommendation close - 1; to-date = latest available daily close / recommendation close - 1.
+生成日期：2026-06-01
+样本数量：15
+明细CSV：`runs\ashare-ai-slowbull\2026-05-26\2026-05-26-backtest_report.csv`
+汇总CSV：`runs\ashare-ai-slowbull\2026-05-26\2026-05-26-backtest_report-summary.csv`
 
-## Summary
-| Grade | N | Recommendation-day avg | 5-day avg | To-date avg | To-date win |
-|---|---:|---:|---:|---:|---:|
-| All | 15 | +0.78% | N/A | -0.29% | 5/15 |
-| A | 5 | -4.82% | N/A | -1.00% | 1/5 |
-| B | 5 | +0.92% | N/A | +2.00% | 3/5 |
-| C | 5 | +6.26% | N/A | -1.86% | 1/5 |
+收益口径：1d/5d/10d/20d 均从推荐基准价开始，使用推荐日之后对应交易日的复权收盘价；asof 使用截至生成日期可取得的最新收盘价。该报告只做研究表现跟踪，不构成个性化投资建议。
 
-## Best and worst to-date
-Top performers:
-- C 华天科技 (002185): +15.10%
-- B 国际复材 (301526): +8.68%
-- A 佰维存储 (688525): +5.16%
-- B 东材科技 (601208): +2.12%
-- B 江波龙 (301308): +1.68%
+## 总体与来源
 
-Bottom performers:
-- C 拓荆科技 (688072): -10.32%
-- C 盛美上海 (688082): -5.10%
-- C 深南电路 (002916): -5.06%
-- A 东芯股份 (688110): -4.73%
-- A 仕佳光子 (688313): -4.27%
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| overall | 1d | 15/15 | -3.07% | -3.80% | +26.67% | 华天科技(002185) +7.93% | 拓荆科技(688072) -11.07% |
+| overall | 5d | 0/15 |  |  |  |  |  |
+| overall | 10d | 0/15 |  |  |  |  |  |
+| overall | 20d | 0/15 |  |  |  |  |  |
+| overall | asof | 15/15 | -3.62% | -2.90% | +26.67% | 华天科技(002185) +3.59% | 拓荆科技(688072) -16.27% |
 
-## Detail
-| Grade | Rank | Name | Code | Recommendation-day | 5-day | 5-day date | To-date | Latest date |
-|---|---:|---|---:|---:|---:|---|---:|---|
-| A | 37 | 佰维存储 | 688525 | -4.07% | N/A | not enough 5 trading days | +5.16% | 2026-05-28 |
-| A | 42 | 德明利 | 001309 | -5.17% | N/A | not enough 5 trading days | -0.27% | 2026-05-28 |
-| A | 61 | 剑桥科技 | 603083 | -1.94% | N/A | not enough 5 trading days | -0.93% | 2026-05-28 |
-| A | 69 | 东芯股份 | 688110 | -6.88% | N/A | not enough 5 trading days | -4.73% | 2026-05-28 |
-| A | 82 | 仕佳光子 | 688313 | -6.06% | N/A | not enough 5 trading days | -4.27% | 2026-05-28 |
-| B | 16 | 沪电股份 | 002463 | +8.83% | N/A | not enough 5 trading days | -0.22% | 2026-05-28 |
-| B | 24 | 中微公司 | 688012 | -4.49% | N/A | not enough 5 trading days | -2.24% | 2026-05-28 |
-| B | 38 | 江波龙 | 301308 | -4.69% | N/A | not enough 5 trading days | +1.68% | 2026-05-28 |
-| B | 81 | 国际复材 | 301526 | +5.75% | N/A | not enough 5 trading days | +8.68% | 2026-05-28 |
-| B | 133 | 东材科技 | 601208 | -0.82% | N/A | not enough 5 trading days | +2.12% | 2026-05-28 |
-| C | 3 | 长电科技 | 600584 | +10.00% | N/A | not enough 5 trading days | -3.91% | 2026-05-28 |
-| C | 27 | 华天科技 | 002185 | +10.02% | N/A | not enough 5 trading days | +15.10% | 2026-05-28 |
-| C | 39 | 深南电路 | 002916 | +4.88% | N/A | not enough 5 trading days | -5.06% | 2026-05-28 |
-| C | 40 | 拓荆科技 | 688072 | +4.02% | N/A | not enough 5 trading days | -10.32% | 2026-05-28 |
-| C | 102 | 盛美上海 | 688082 | +2.38% | N/A | not enough 5 trading days | -5.10% | 2026-05-28 |
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| source:ashare-ai-slowbull | 1d | 15/15 | -3.07% | -3.80% | +26.67% | 华天科技(002185) +7.93% | 拓荆科技(688072) -11.07% |
+| source:ashare-ai-slowbull | 5d | 0/15 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 10d | 0/15 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 20d | 0/15 |  |  |  |  |  |
+| source:ashare-ai-slowbull | asof | 15/15 | -3.62% | -2.90% | +26.67% | 华天科技(002185) +3.59% | 拓荆科技(688072) -16.27% |
+
+## 按推荐日期
+
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| date:ashare-ai-slowbull/2026-05-26 | 1d | 15/15 | -3.07% | -3.80% | +26.67% | 华天科技(002185) +7.93% | 拓荆科技(688072) -11.07% |
+| date:ashare-ai-slowbull/2026-05-26 | 5d | 0/15 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-26 | 10d | 0/15 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-26 | 20d | 0/15 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-26 | asof | 15/15 | -3.62% | -2.90% | +26.67% | 华天科技(002185) +3.59% | 拓荆科技(688072) -16.27% |
+
+## 按档位
+
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| grade:ashare-ai-slowbull/A | 1d | 5/5 | -3.62% | -4.60% | +40.00% | 佰维存储(688525) +3.01% | 仕佳光子(688313) -9.40% |
+| grade:ashare-ai-slowbull/A | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/A | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/A | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/A | asof | 5/5 | -3.14% | -2.90% | +20.00% | 剑桥科技(603083) +1.35% | 东芯股份(688110) -8.36% |
+| grade:ashare-ai-slowbull/B | 1d | 5/5 | -2.12% | -1.97% | +20.00% | 江波龙(301308) +2.35% | 国际复材(301526) -5.35% |
+| grade:ashare-ai-slowbull/B | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/B | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/B | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/B | asof | 5/5 | -1.34% | -0.99% | +40.00% | 国际复材(301526) +2.41% | 东材科技(601208) -6.19% |
+| grade:ashare-ai-slowbull/C | 1d | 5/5 | -3.46% | -5.62% | +20.00% | 华天科技(002185) +7.93% | 拓荆科技(688072) -11.07% |
+| grade:ashare-ai-slowbull/C | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/C | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/C | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/C | asof | 5/5 | -6.38% | -6.96% | +20.00% | 华天科技(002185) +3.59% | 拓荆科技(688072) -16.27% |
+

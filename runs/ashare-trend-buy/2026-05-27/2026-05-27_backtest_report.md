@@ -1,45 +1,57 @@
-# ashare-trend-buy backtest for 2026-05-27
+# ashare-trend-buy 2026-05-27 推荐历史回测报告
 
-recommend_date: 2026-05-27
-generated_from: 2026-05-29_trend_buy_2026-05-20_to_2026-05-27.csv
-latest_price_time: 2026-05-29 08:55:03
-sample_rows: 15; unique_codes: 15
-return_basis: same_day = recommendation day close vs previous close; 5d = recommendation close to fifth later trading-day close; to_now = recommendation close to latest available quote.
+生成日期：2026-06-01
+样本数量：15
+明细CSV：`runs\ashare-trend-buy\2026-05-27\2026-05-27_backtest_report.csv`
+汇总CSV：`runs\ashare-trend-buy\2026-05-27\2026-05-27_backtest_report-summary.csv`
 
-## summary
+收益口径：1d/5d/10d/20d 均从推荐基准价开始，使用推荐日之后对应交易日的复权收盘价；asof 使用截至生成日期可取得的最新收盘价。该报告只做研究表现跟踪，不构成个性化投资建议。
 
-| metric | n | avg | median | win_rate | best | worst |
-|---|---:|---:|---:|---:|---:|---:|
-| same_day | 15 | +2.82% | +2.54% | 12/15 | +7.98% | -3.90% |
-| five_trading_day | 0 | N/A | N/A | N/A | N/A | N/A |
-| to_now | 15 | +2.65% | +1.46% | 9/15 | +10.00% | -4.56% |
+## 总体与来源
 
-## by_tier
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| overall | 1d | 15/15 | +2.65% | +1.46% | +60.00% | 再升科技(603601) +10.00% | 中国铝业(601600) -4.56% |
+| overall | 5d | 0/15 |  |  |  |  |  |
+| overall | 10d | 0/15 |  |  |  |  |  |
+| overall | 20d | 0/15 |  |  |  |  |  |
+| overall | asof | 15/15 | -1.04% | -3.15% | +33.33% | 科瑞技术(002957) +10.14% | 东阳光(600673) -9.43% |
 
-| tier | rows | same_day_avg | five_day_avg | to_now_avg | to_now_win |
-|---|---:|---:|---:|---:|---:|
-| A | 5 | +1.38% | less_than_5d | +4.02% | 4/5 |
-| B | 5 | +5.92% | less_than_5d | +3.80% | 4/5 |
-| C | 5 | +1.15% | less_than_5d | +0.14% | 1/5 |
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| source:ashare-trend-buy | 1d | 15/15 | +2.65% | +1.46% | +60.00% | 再升科技(603601) +10.00% | 中国铝业(601600) -4.56% |
+| source:ashare-trend-buy | 5d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | 10d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | 20d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | asof | 15/15 | -1.04% | -3.15% | +33.33% | 科瑞技术(002957) +10.14% | 东阳光(600673) -9.43% |
 
-## symbols
+## 按推荐日期
 
-| tier | state | name | code | rec_close | same_day | fifth_trade_date | five_day | now_date | now_price | to_now | status |
-|---|---|---|---:|---:|---:|---|---:|---|---:|---:|---|
-| B | B | 再升科技 | 603601 | 21.39 | +6.52% |  | N/A | 2026-05-28 | 23.53 | +10.00% | less_than_5d |
-| C | C | 科瑞技术 | 002957 | 56.33 | +6.65% |  | N/A | 2026-05-29 | 61.96 | +9.99% | less_than_5d |
-| A | A | 中际旭创 | 300308 | 1111.370 | +0.76% |  | N/A | 2026-05-29 | 1197.990 | +7.79% | less_than_5d |
-| A | A | 工业富联 | 601138 | 70.08 | +0.14% |  | N/A | 2026-05-28 | 75.00 | +7.02% | less_than_5d |
-| A | A | 华润微 | 688396 | 65.98 | +2.49% |  | N/A | 2026-05-28 | 69.80 | +5.79% | less_than_5d |
-| B | B | 天孚通信 | 300394 | 428.61 | +5.37% |  | N/A | 2026-05-29 | 447.56 | +4.42% | less_than_5d |
-| B | B | 阳光电源 | 300274 | 184.09 | +2.85% |  | N/A | 2026-05-29 | 190.09 | +3.26% | less_than_5d |
-| A | A | 紫光国微 | 002049 | 85.06 | +2.54% |  | N/A | 2026-05-29 | 86.30 | +1.46% | less_than_5d |
-| B | B | 金盘科技 | 688676 | 103.75 | +7.98% |  | N/A | 2026-05-28 | 105.15 | +1.35% | less_than_5d |
-| B | B | 东阳光 | 600673 | 39.33 | +6.88% |  | N/A | 2026-05-28 | 39.31 | -0.05% | less_than_5d |
-| C | C | 节能风电 | 601016 | 4.92 | +6.26% |  | N/A | 2026-05-28 | 4.87 | -1.02% | less_than_5d |
-| C | C | 同花顺 | 300033 | 238.99 | -1.21% |  | N/A | 2026-05-29 | 236.52 | -1.03% | less_than_5d |
-| A | A | 东山精密 | 002384 | 223.37 | +0.98% |  | N/A | 2026-05-29 | 219.00 | -1.96% | less_than_5d |
-| C | C | XD洛阳钼 | 603993 | 19.32 | -3.90% |  | N/A | 2026-05-28 | 18.80 | -2.69% | less_than_5d |
-| C | C | 中国铝业 | 601600 | 11.84 | -2.07% |  | N/A | 2026-05-28 | 11.30 | -4.56% | less_than_5d |
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| date:ashare-trend-buy/2026-05-27 | 1d | 15/15 | +2.65% | +1.46% | +60.00% | 再升科技(603601) +10.00% | 中国铝业(601600) -4.56% |
+| date:ashare-trend-buy/2026-05-27 | 5d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-27 | 10d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-27 | 20d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-27 | asof | 15/15 | -1.04% | -3.15% | +33.33% | 科瑞技术(002957) +10.14% | 东阳光(600673) -9.43% |
 
-Research backtest only; not personalized investment advice.
+## 按档位
+
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| grade:ashare-trend-buy/A | 1d | 5/5 | +4.02% | +5.79% | +80.00% | 中际旭创(300308) +7.79% | 东山精密(002384) -1.96% |
+| grade:ashare-trend-buy/A | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | asof | 5/5 | -1.01% | -2.86% | +40.00% | 工业富联(601138) +4.74% | 紫光国微(002049) -6.77% |
+| grade:ashare-trend-buy/B | 1d | 5/5 | +3.80% | +3.26% | +80.00% | 再升科技(603601) +10.00% | 东阳光(600673) -0.05% |
+| grade:ashare-trend-buy/B | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | asof | 5/5 | -2.14% | -3.15% | +20.00% | 天孚通信(300394) +6.20% | 东阳光(600673) -9.43% |
+| grade:ashare-trend-buy/C | 1d | 5/5 | +0.14% | -1.03% | +20.00% | 科瑞技术(002957) +9.99% | 中国铝业(601600) -4.56% |
+| grade:ashare-trend-buy/C | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | asof | 5/5 | +0.03% | -3.55% | +40.00% | 科瑞技术(002957) +10.14% | 同花顺(300033) -4.70% |
+

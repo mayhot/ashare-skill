@@ -20,7 +20,7 @@ from typing import Iterable
 
 
 SOURCE_SKILLS = ("ashare-trend-buy", "ashare-ai-slowbull")
-HORIZONS = (5, 10, 20)
+HORIZONS = (1, 5, 10, 20)
 
 
 @dataclass
@@ -224,7 +224,7 @@ def extract_from_structured_csv(source_dir: Path, source_skill: str, allowed: se
 
 
 def extract_from_markdown(source_dir: Path, source_skill: str, allowed: set[str]) -> list[Pick]:
-    report_names = ("result.md", "report.md")
+    report_names = ("result.md", "report.md", f"{source_dir.name}.md")
     report_path = next((source_dir / name for name in report_names if (source_dir / name).exists()), None)
     if not report_path:
         return []
@@ -632,6 +632,175 @@ def summary_rows(rows: list[ReturnRow], as_of: str) -> list[dict[str, str]]:
     return result
 
 
+def historical_metric_values(rows: list[ReturnRow], horizon: int | str) -> list[tuple[ReturnRow, float]]:
+    if horizon == "asof":
+        return [(row, row.return_pct) for row in rows if row.return_pct is not None]
+    return [
+        (row, row.horizon_returns[horizon])
+        for row in rows
+        if row.horizon_returns.get(horizon) is not None
+    ]
+
+
+def historical_summary_row(group: str, horizon: int | str, rows: list[ReturnRow]) -> dict[str, str]:
+    values = historical_metric_values(rows, horizon)
+    summary = summarize_values(rows, values)
+    return {
+        "group": group,
+        "horizon": "asof" if horizon == "asof" else f"{horizon}d",
+        **summary,
+    }
+
+
+def grouped_return_rows(rows: list[ReturnRow], key_fn) -> list[tuple[str, list[ReturnRow]]]:
+    groups: dict[str, list[ReturnRow]] = {}
+    for row in rows:
+        groups.setdefault(key_fn(row), []).append(row)
+    return sorted(groups.items(), key=lambda item: item[0])
+
+
+def historical_summary_rows(rows: list[ReturnRow]) -> list[dict[str, str]]:
+    if not rows:
+        return []
+    result: list[dict[str, str]] = []
+    horizons: tuple[int | str, ...] = (1, 5, 10, 20, "asof")
+    groups: list[tuple[str, list[ReturnRow]]] = [("overall", rows)]
+    groups.extend(grouped_return_rows(rows, lambda row: f"source:{row.pick.source_skill}"))
+    groups.extend(
+        grouped_return_rows(
+            rows,
+            lambda row: f"date:{row.pick.source_skill}/{row.pick.run_date}",
+        )
+    )
+    groups.extend(
+        grouped_return_rows(
+            rows,
+            lambda row: f"grade:{row.pick.source_skill}/{row.pick.grade or 'NA'}",
+        )
+    )
+    for group, group_rows in groups:
+        for horizon in horizons:
+            result.append(historical_summary_row(group, horizon, group_rows))
+    return result
+
+
+def historical_detail_rows(rows: list[ReturnRow]) -> list[dict[str, str]]:
+    return [
+        return_row_to_dict(row)
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                item.pick.source_skill,
+                item.pick.run_date,
+                item.pick.grade,
+                item.pick.code,
+            ),
+        )
+    ]
+
+
+def pct_display(value: str) -> str:
+    number = to_float(value)
+    return "" if number is None else f"{number:+.2f}%"
+
+
+def markdown_summary_table(summary: list[dict[str, str]], group_prefix: str) -> list[str]:
+    rows = [row for row in summary if row["group"].startswith(group_prefix)]
+    lines = [
+        "| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |",
+        "|---|---|---:|---:|---:|---:|---|---|",
+    ]
+    for row in rows:
+        best = (
+            f"{row['best_name']}({row['best_code']}) {pct_display(row['best_return_pct'])}".strip()
+            if row["best_code"]
+            else ""
+        )
+        worst = (
+            f"{row['worst_name']}({row['worst_code']}) {pct_display(row['worst_return_pct'])}".strip()
+            if row["worst_code"]
+            else ""
+        )
+        lines.append(
+            f"| {row['group']} | {row['horizon']} | "
+            f"{row['available_count']}/{row['total_count']} | "
+            f"{pct_display(row['avg_return_pct'])} | {pct_display(row['median_return_pct'])} | "
+            f"{pct_display(row['win_rate_pct'])} | {best} | {worst} |"
+        )
+    return lines
+
+
+def backtest_stem(source_skill: str, run_date: str) -> str:
+    if source_skill == "ashare-ai-slowbull":
+        return f"{run_date}-backtest_report"
+    return f"{run_date}_backtest_report"
+
+
+def write_backtest_outputs(
+    *,
+    out_root: Path,
+    repo_root: Path,
+    rows: list[ReturnRow],
+    as_of: str,
+    report_name: str,
+    title: str,
+) -> dict[str, Path]:
+    summary = historical_summary_rows(rows)
+    detail = historical_detail_rows(rows)
+    summary_path = out_root / f"{report_name}-summary.csv"
+    detail_path = out_root / f"{report_name}.csv"
+    report_path = out_root / f"{report_name}.md"
+
+    write_csv(summary_path, summary)
+    write_csv(detail_path, detail)
+
+    lines = [
+        f"# {title}",
+        "",
+        f"生成日期：{as_of}",
+        f"样本数量：{len(rows)}",
+        f"明细CSV：`{detail_path.relative_to(repo_root)}`",
+        f"汇总CSV：`{summary_path.relative_to(repo_root)}`",
+        "",
+        "收益口径：1d/5d/10d/20d 均从推荐基准价开始，使用推荐日之后对应交易日的复权收盘价；asof 使用截至生成日期可取得的最新收盘价。该报告只做研究表现跟踪，不构成个性化投资建议。",
+        "",
+        "## 总体与来源",
+        "",
+    ]
+    lines.extend(markdown_summary_table(summary, "overall"))
+    lines.append("")
+    lines.extend(markdown_summary_table(summary, "source:"))
+    lines.extend(["", "## 按推荐日期", ""])
+    lines.extend(markdown_summary_table(summary, "date:"))
+    lines.extend(["", "## 按档位", ""])
+    lines.extend(markdown_summary_table(summary, "grade:"))
+    lines.append("")
+    report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"report": report_path, "summary": summary_path, "detail": detail_path}
+
+
+def write_date_backtest_outputs(
+    *,
+    repo_root: Path,
+    source_dir: Path,
+    rows: list[ReturnRow],
+    as_of: str,
+) -> dict[str, Path] | None:
+    if not rows:
+        return None
+    source_skill = rows[0].pick.source_skill
+    run_date = rows[0].pick.run_date
+    stem = backtest_stem(source_skill, run_date)
+    return write_backtest_outputs(
+        out_root=source_dir,
+        repo_root=repo_root,
+        rows=rows,
+        as_of=as_of,
+        report_name=stem,
+        title=f"{source_skill} {run_date} 推荐历史回测报告",
+    )
+
+
 def discover_source_dirs(
     repo_root: Path,
     skills: Iterable[str],
@@ -663,6 +832,7 @@ def has_source_artifact(path: Path) -> bool:
     return any(
         (path / relative).exists()
         for relative in (
+            f"{path.name}.md",
             "result.md",
             "report.md",
             "data/scored-candidates.csv",
@@ -712,6 +882,12 @@ def main() -> int:
             write_csv(source_dir / "data" / "recommendation-returns.csv", detail_dicts)
             write_csv(source_dir / "data" / "recommendation-returns-latest.csv", latest_dicts)
             write_csv(source_dir / "data" / "recommendation-returns-summary.csv", summaries)
+            write_date_backtest_outputs(
+                repo_root=repo_root,
+                source_dir=source_dir,
+                rows=return_rows,
+                as_of=as_of,
+            )
         print(f"[OK] {skill}/{source_dir.name}: {len(return_rows)} rows")
 
     if not args.dry_run:

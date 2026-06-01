@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股超级短线系统"
+  short_description: "把职业超级短线交易纪律整理为可执行清单"
+  default_prompt: "Use $ashare-super-shortline-system 将短线交易计划整理成可执行的目标、买卖点、仓位和复盘清单。"

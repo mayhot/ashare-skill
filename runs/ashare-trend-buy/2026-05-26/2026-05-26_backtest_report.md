@@ -1,45 +1,57 @@
-# ashare-trend-buy backtest for 2026-05-26
+# ashare-trend-buy 2026-05-26 推荐历史回测报告
 
-recommend_date: 2026-05-26
-generated_from: 2026-05-29_trend_buy_2026-05-20_to_2026-05-27.csv
-latest_price_time: 2026-05-29 08:55:09
-sample_rows: 15; unique_codes: 15
-return_basis: same_day = recommendation day close vs previous close; 5d = recommendation close to fifth later trading-day close; to_now = recommendation close to latest available quote.
+生成日期：2026-06-01
+样本数量：15
+明细CSV：`runs\ashare-trend-buy\2026-05-26\2026-05-26_backtest_report.csv`
+汇总CSV：`runs\ashare-trend-buy\2026-05-26\2026-05-26_backtest_report-summary.csv`
 
-## summary
+收益口径：1d/5d/10d/20d 均从推荐基准价开始，使用推荐日之后对应交易日的复权收盘价；asof 使用截至生成日期可取得的最新收盘价。该报告只做研究表现跟踪，不构成个性化投资建议。
 
-| metric | n | avg | median | win_rate | best | worst |
-|---|---:|---:|---:|---:|---:|---:|
-| same_day | 15 | +3.28% | +3.48% | 12/15 | +10.01% | -5.62% |
-| five_trading_day | 0 | N/A | N/A | N/A | N/A | N/A |
-| to_now | 15 | -1.62% | -4.49% | 5/15 | +16.75% | -10.71% |
+## 总体与来源
 
-## by_tier
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| overall | 1d | 15/15 | -2.04% | -3.47% | +26.67% | 扬杰科技(300373) +12.38% | 海光信息(688041) -7.14% |
+| overall | 5d | 0/15 |  |  |  |  |  |
+| overall | 10d | 0/15 |  |  |  |  |  |
+| overall | 20d | 0/15 |  |  |  |  |  |
+| overall | asof | 15/15 | -4.02% | -5.54% | +33.33% | 扬杰科技(300373) +9.42% | 三花智控(002050) -14.88% |
 
-| tier | rows | same_day_avg | five_day_avg | to_now_avg | to_now_win |
-|---|---:|---:|---:|---:|---:|
-| A | 5 | +2.51% | less_than_5d | -3.15% | 1/5 |
-| B | 5 | +4.21% | less_than_5d | +2.75% | 3/5 |
-| C | 5 | +3.11% | less_than_5d | -4.46% | 1/5 |
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| source:ashare-trend-buy | 1d | 15/15 | -2.04% | -3.47% | +26.67% | 扬杰科技(300373) +12.38% | 海光信息(688041) -7.14% |
+| source:ashare-trend-buy | 5d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | 10d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | 20d | 0/15 |  |  |  |  |  |
+| source:ashare-trend-buy | asof | 15/15 | -4.02% | -5.54% | +33.33% | 扬杰科技(300373) +9.42% | 三花智控(002050) -14.88% |
 
-## symbols
+## 按推荐日期
 
-| tier | state | name | code | rec_close | same_day | fifth_trade_date | five_day | now_date | now_price | to_now | status |
-|---|---|---|---:|---:|---:|---|---:|---|---:|---:|---|
-| B | B | 扬杰科技 | 300373 | 97.90 | +2.79% |  | N/A | 2026-05-29 | 114.30 | +16.75% | less_than_5d |
-| A | A | 中际旭创 | 300308 | 1103.000 | +0.91% |  | N/A | 2026-05-29 | 1197.990 | +8.61% | less_than_5d |
-| B | B | 歌尔股份 | 002241 | 27.10 | +7.16% |  | N/A | 2026-05-29 | 28.20 | +4.06% | less_than_5d |
-| B | B | 新易盛 | 300502 | 700.00 | +6.22% |  | N/A | 2026-05-29 | 718.34 | +2.62% | less_than_5d |
-| C | C | 中天科技 | 600522 | 40.48 | -5.62% |  | N/A | 2026-05-28 | 40.52 | +0.10% | less_than_5d |
-| C | C | 飞凯材料 | 300398 | 40.15 | -2.88% |  | N/A | 2026-05-29 | 39.84 | -0.77% | less_than_5d |
-| A | A | TCL科技 | 000100 | 4.65 | +4.73% |  | N/A | 2026-05-29 | 4.59 | -1.29% | less_than_5d |
-| A | A | 胜宏科技 | 300476 | 392.95 | +2.46% |  | N/A | 2026-05-29 | 375.30 | -4.49% | less_than_5d |
-| B | B | 兴森科技 | 002436 | 38.08 | -0.03% |  | N/A | 2026-05-29 | 36.34 | -4.57% | less_than_5d |
-| B | B | 深南电路 | 002916 | 417.10 | +4.90% |  | N/A | 2026-05-29 | 395.88 | -5.09% | less_than_5d |
-| C | C | 明阳智能 | 601615 | 18.70 | +6.67% |  | N/A | 2026-05-28 | 17.60 | -5.88% | less_than_5d |
-| C | C | 中国铝业 | 601600 | 12.09 | +10.01% |  | N/A | 2026-05-28 | 11.30 | -6.53% | less_than_5d |
-| A | A | 海光信息 | 688041 | 341.16 | +3.48% |  | N/A | 2026-05-28 | 314.36 | -7.86% | less_than_5d |
-| C | C | 云铝股份 | 000807 | 31.69 | +7.39% |  | N/A | 2026-05-29 | 28.77 | -9.21% | less_than_5d |
-| A | A | 三花智控 | 002050 | 54.44 | +0.98% |  | N/A | 2026-05-29 | 48.61 | -10.71% | less_than_5d |
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| date:ashare-trend-buy/2026-05-26 | 1d | 15/15 | -2.04% | -3.47% | +26.67% | 扬杰科技(300373) +12.38% | 海光信息(688041) -7.14% |
+| date:ashare-trend-buy/2026-05-26 | 5d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-26 | 10d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-26 | 20d | 0/15 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-05-26 | asof | 15/15 | -4.02% | -5.54% | +33.33% | 扬杰科技(300373) +9.42% | 三花智控(002050) -14.88% |
 
-Research backtest only; not personalized investment advice.
+## 按档位
+
+| 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
+|---|---|---:|---:|---:|---:|---|---|
+| grade:ashare-trend-buy/A | 1d | 5/5 | -3.10% | -3.47% | +40.00% | 中际旭创(300308) +0.76% | 海光信息(688041) -7.14% |
+| grade:ashare-trend-buy/A | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | asof | 5/5 | -7.53% | -7.96% | +20.00% | 中际旭创(300308) +5.27% | 三花智控(002050) -14.88% |
+| grade:ashare-trend-buy/B | 1d | 5/5 | +1.35% | -0.71% | +40.00% | 扬杰科技(300373) +12.38% | 深南电路(002916) -5.62% |
+| grade:ashare-trend-buy/B | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/B | asof | 5/5 | +1.91% | +0.92% | +60.00% | 扬杰科技(300373) +9.42% | 深南电路(002916) -1.36% |
+| grade:ashare-trend-buy/C | 1d | 5/5 | -4.37% | -5.19% | +0.00% | 中国铝业(601600) -2.07% | 云铝股份(000807) -5.84% |
+| grade:ashare-trend-buy/C | 5d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | 10d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | 20d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/C | asof | 5/5 | -6.46% | -9.27% | +20.00% | 中天科技(600522) +4.22% | 明阳智能(601615) -11.60% |
+

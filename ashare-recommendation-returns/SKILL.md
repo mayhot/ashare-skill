@@ -1,11 +1,11 @@
 ---
 name: ashare-recommendation-returns
-description: Track and summarize post-recommendation returns for the daily output of the local A-share skills ashare-trend-buy and ashare-ai-slowbull. Use when the user asks to calculate recommended stock performance through a given date, write return CSV files into each source skill's run date directory, process historical date folders day by day, or produce 5/10/20 trading-day return summaries for those recommendation results.
+description: Track and summarize post-recommendation returns for the daily output of the local A-share skills ashare-trend-buy and ashare-ai-slowbull. Use when the user asks to calculate recommended stock performance through a given date, write return CSV files into each source skill's run date directory, process historical date folders day by day, produce 1/5/10/20 trading-day return summaries, or generate historical backtest reports for those recommendation results.
 ---
 
 # A-Share Recommendation Return Tracking
 
-Use this skill to calculate how the recommended stocks from `ashare-trend-buy` and `ashare-ai-slowbull` performed after each daily screening run. Treat this as research-performance tracking, not investment advice.
+Use this skill to calculate how the recommended stocks from `ashare-trend-buy` and `ashare-ai-slowbull` performed after each daily screening run. This skill owns historical backtests and cross-date return tracking; source screening skills should only create their daily recommendation reports. Treat this as research-performance tracking, not investment advice.
 
 ## Quick Start
 
@@ -27,13 +27,26 @@ For each source date folder it writes:
 ```text
 data/recommendation-returns.csv
 data/recommendation-returns-summary.csv
+YYYY-MM-DD_backtest_report.md
+YYYY-MM-DD_backtest_report.csv
+YYYY-MM-DD_backtest_report-summary.csv
 ```
 
-It also writes consolidated audit files under:
+For `ashare-ai-slowbull`, keep its existing file stem style:
+
+```text
+YYYY-MM-DD-backtest_report.md
+YYYY-MM-DD-backtest_report.csv
+YYYY-MM-DD-backtest_report-summary.csv
+```
+
+It also writes consolidated audit CSV files under:
 
 ```text
 runs/ashare-recommendation-returns/YYYY-MM-DD/
 ```
+
+Historical backtest reports must stay in the original source skill's run date folder, for example `runs/ashare-trend-buy/2026-05-20/2026-05-20_backtest_report.md`, not under `runs/ashare-recommendation-returns/`.
 
 ## Default Recommendation Definition
 
@@ -64,7 +77,7 @@ Calculate:
 return_pct = (asof_close / base_price - 1) * 100
 ```
 
-Also calculate 5/10/20 trading-day horizon returns when enough daily bars exist after the base date. Mark horizon rows as `pending` until the horizon is reached.
+Also calculate 1/5/10/20 trading-day horizon returns when enough daily bars exist after the base date. Mark horizon rows as `pending` until the horizon is reached.
 
 ## Outputs
 
@@ -77,7 +90,11 @@ source_skill,run_date,grade,score,elapsed_trading_days,status
 
 Each recommended stock can have multiple rows, one row per available trading day from the buy/base date through `--as-of`.
 
-`recommendation-returns-summary.csv` is the per-date summary. It includes `asof`, `5d`, `10d`, and `20d` rows with count, average return, median return, win rate, best stock, and worst stock.
+`recommendation-returns-summary.csv` is the per-date summary. It includes `asof`, `1d`, `5d`, `10d`, and `20d` rows with count, average return, median return, win rate, best stock, and worst stock.
+
+The per-date `*_backtest_report.md` file is the historical backtest report for that source run folder. It summarizes overall performance and grade performance for that recommendation date. The paired CSV files contain grouped summary rows and row-level latest return details.
+
+For a full slowbull-style A/B/C review, run with `--source-skill ashare-ai-slowbull --include-grades A,B,C`.
 
 ## Operating Notes
 
@@ -94,4 +111,5 @@ Before reporting completion:
 1. Confirm the script found the intended date folders.
 2. Confirm at least one recommendation row was extracted when the source report contains A/B rows.
 3. Confirm `recommendation-returns.csv` and `recommendation-returns-summary.csv` were written in each processed source date folder unless `--dry-run` was used.
-4. If network price fetches failed, report the affected codes and statuses instead of silently treating missing data as zero return.
+4. Confirm the per-date backtest report and paired CSV files were written under each original source run folder unless `--dry-run` was used.
+5. If network price fetches failed, report the affected codes and statuses instead of silently treating missing data as zero return.
