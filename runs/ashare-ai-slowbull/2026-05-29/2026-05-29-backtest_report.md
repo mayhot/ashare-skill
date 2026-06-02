@@ -1,7 +1,7 @@
 # ashare-ai-slowbull 2026-05-29 推荐历史回测报告
 
-生成日期：2026-06-01
-样本数量：13
+生成日期：2026-06-02
+样本数量：10
 明细CSV：`runs\ashare-ai-slowbull\2026-05-29\2026-05-29-backtest_report.csv`
 汇总CSV：`runs\ashare-ai-slowbull\2026-05-29\2026-05-29-backtest_report-summary.csv`
 
@@ -11,47 +11,42 @@
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| overall | 1d | 1/13 | -6.83% | -6.83% | +0.00% | 佰维存储(688525) -6.83% | 佰维存储(688525) -6.83% |
-| overall | 5d | 0/13 |  |  |  |  |  |
-| overall | 10d | 0/13 |  |  |  |  |  |
-| overall | 20d | 0/13 |  |  |  |  |  |
-| overall | asof | 13/13 | -0.53% | +0.00% | +0.00% | 通富微电(002156) +0.00% | 佰维存储(688525) -6.83% |
+| overall | 1d | 8/10 | -6.93% | -7.43% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
+| overall | 5d | 0/10 |  |  |  |  |  |
+| overall | 10d | 0/10 |  |  |  |  |  |
+| overall | 20d | 0/10 |  |  |  |  |  |
+| overall | asof | 8/10 | -6.99% | -7.48% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| source:ashare-ai-slowbull | 1d | 1/13 | -6.83% | -6.83% | +0.00% | 佰维存储(688525) -6.83% | 佰维存储(688525) -6.83% |
-| source:ashare-ai-slowbull | 5d | 0/13 |  |  |  |  |  |
-| source:ashare-ai-slowbull | 10d | 0/13 |  |  |  |  |  |
-| source:ashare-ai-slowbull | 20d | 0/13 |  |  |  |  |  |
-| source:ashare-ai-slowbull | asof | 13/13 | -0.53% | +0.00% | +0.00% | 通富微电(002156) +0.00% | 佰维存储(688525) -6.83% |
+| source:ashare-ai-slowbull | 1d | 8/10 | -6.93% | -7.43% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
+| source:ashare-ai-slowbull | 5d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 10d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 20d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | asof | 8/10 | -6.99% | -7.48% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
 
 ## 按推荐日期
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| date:ashare-ai-slowbull/2026-05-29 | 1d | 1/13 | -6.83% | -6.83% | +0.00% | 佰维存储(688525) -6.83% | 佰维存储(688525) -6.83% |
-| date:ashare-ai-slowbull/2026-05-29 | 5d | 0/13 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-29 | 10d | 0/13 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-29 | 20d | 0/13 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-29 | asof | 13/13 | -0.53% | +0.00% | +0.00% | 通富微电(002156) +0.00% | 佰维存储(688525) -6.83% |
+| date:ashare-ai-slowbull/2026-05-29 | 1d | 8/10 | -6.93% | -7.43% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
+| date:ashare-ai-slowbull/2026-05-29 | 5d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-29 | 10d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-29 | 20d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-29 | asof | 8/10 | -6.99% | -7.48% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
 
 ## 按档位
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| grade:ashare-ai-slowbull/A | 1d | 1/5 | -6.83% | -6.83% | +0.00% | 佰维存储(688525) -6.83% | 佰维存储(688525) -6.83% |
+| grade:ashare-ai-slowbull/A | 1d | 4/5 | -5.96% | -6.91% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
 | grade:ashare-ai-slowbull/A | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/A | asof | 5/5 | -1.37% | +0.00% | +0.00% | 通富微电(002156) +0.00% | 佰维存储(688525) -6.83% |
-| grade:ashare-ai-slowbull/B | 1d | 0/5 |  |  |  |  |  |
+| grade:ashare-ai-slowbull/A | asof | 4/5 | -6.08% | -7.15% | +0.00% | 光库科技(300620) -0.05% | 剑桥科技(603083) -9.97% |
+| grade:ashare-ai-slowbull/B | 1d | 4/5 | -7.90% | -7.66% | +0.00% | 沪电股份(002463) -7.22% | 景旺电子(603228) -9.07% |
 | grade:ashare-ai-slowbull/B | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/B | asof | 5/5 | +0.00% | +0.00% | +0.00% | 沪电股份(002463) +0.00% | 沪电股份(002463) +0.00% |
-| grade:ashare-ai-slowbull/C | 1d | 0/3 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | 5d | 0/3 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | 10d | 0/3 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | 20d | 0/3 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | asof | 3/3 | +0.00% | +0.00% | +0.00% | 三环集团(300408) +0.00% | 三环集团(300408) +0.00% |
+| grade:ashare-ai-slowbull/B | asof | 4/5 | -7.90% | -7.66% | +0.00% | 沪电股份(002463) -7.22% | 景旺电子(603228) -9.07% |
 
