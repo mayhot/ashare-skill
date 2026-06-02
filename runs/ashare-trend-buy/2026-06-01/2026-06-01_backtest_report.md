@@ -1,7 +1,7 @@
 # ashare-trend-buy 2026-06-01 推荐历史回测报告
 
-生成日期：2026-06-01
-样本数量：15
+生成日期：2026-06-02
+样本数量：10
 明细CSV：`runs\ashare-trend-buy\2026-06-01\2026-06-01_backtest_report.csv`
 汇总CSV：`runs\ashare-trend-buy\2026-06-01\2026-06-01_backtest_report-summary.csv`
 
@@ -11,29 +11,29 @@
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| overall | 1d | 0/15 |  |  |  |  |  |
-| overall | 5d | 0/15 |  |  |  |  |  |
-| overall | 10d | 0/15 |  |  |  |  |  |
-| overall | 20d | 0/15 |  |  |  |  |  |
-| overall | asof | 13/15 | +0.00% | +0.00% | +0.00% | 工业富联(601138) +0.00% | 工业富联(601138) +0.00% |
+| overall | 1d | 1/10 | +0.03% | +0.03% | +100.00% | 中芯国际(688981) +0.03% | 中芯国际(688981) +0.03% |
+| overall | 5d | 0/10 |  |  |  |  |  |
+| overall | 10d | 0/10 |  |  |  |  |  |
+| overall | 20d | 0/10 |  |  |  |  |  |
+| overall | asof | 10/10 | +0.00% | +0.00% | +10.00% | 中芯国际(688981) +0.03% | 工业富联(601138) +0.00% |
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| source:ashare-trend-buy | 1d | 0/15 |  |  |  |  |  |
-| source:ashare-trend-buy | 5d | 0/15 |  |  |  |  |  |
-| source:ashare-trend-buy | 10d | 0/15 |  |  |  |  |  |
-| source:ashare-trend-buy | 20d | 0/15 |  |  |  |  |  |
-| source:ashare-trend-buy | asof | 13/15 | +0.00% | +0.00% | +0.00% | 工业富联(601138) +0.00% | 工业富联(601138) +0.00% |
+| source:ashare-trend-buy | 1d | 1/10 | +0.03% | +0.03% | +100.00% | 中芯国际(688981) +0.03% | 中芯国际(688981) +0.03% |
+| source:ashare-trend-buy | 5d | 0/10 |  |  |  |  |  |
+| source:ashare-trend-buy | 10d | 0/10 |  |  |  |  |  |
+| source:ashare-trend-buy | 20d | 0/10 |  |  |  |  |  |
+| source:ashare-trend-buy | asof | 10/10 | +0.00% | +0.00% | +10.00% | 中芯国际(688981) +0.03% | 工业富联(601138) +0.00% |
 
 ## 按推荐日期
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| date:ashare-trend-buy/2026-06-01 | 1d | 0/15 |  |  |  |  |  |
-| date:ashare-trend-buy/2026-06-01 | 5d | 0/15 |  |  |  |  |  |
-| date:ashare-trend-buy/2026-06-01 | 10d | 0/15 |  |  |  |  |  |
-| date:ashare-trend-buy/2026-06-01 | 20d | 0/15 |  |  |  |  |  |
-| date:ashare-trend-buy/2026-06-01 | asof | 13/15 | +0.00% | +0.00% | +0.00% | 工业富联(601138) +0.00% | 工业富联(601138) +0.00% |
+| date:ashare-trend-buy/2026-06-01 | 1d | 1/10 | +0.03% | +0.03% | +100.00% | 中芯国际(688981) +0.03% | 中芯国际(688981) +0.03% |
+| date:ashare-trend-buy/2026-06-01 | 5d | 0/10 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-06-01 | 10d | 0/10 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-06-01 | 20d | 0/10 |  |  |  |  |  |
+| date:ashare-trend-buy/2026-06-01 | asof | 10/10 | +0.00% | +0.00% | +10.00% | 中芯国际(688981) +0.03% | 工业富联(601138) +0.00% |
 
 ## 按档位
 
@@ -43,15 +43,10 @@
 | grade:ashare-trend-buy/A | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/A | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/A | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/A | asof | 4/5 | +0.00% | +0.00% | +0.00% | 工业富联(601138) +0.00% | 工业富联(601138) +0.00% |
-| grade:ashare-trend-buy/B | 1d | 0/5 |  |  |  |  |  |
+| grade:ashare-trend-buy/A | asof | 5/5 | +0.00% | +0.00% | +0.00% | 工业富联(601138) +0.00% | 工业富联(601138) +0.00% |
+| grade:ashare-trend-buy/B | 1d | 1/5 | +0.03% | +0.03% | +100.00% | 中芯国际(688981) +0.03% | 中芯国际(688981) +0.03% |
 | grade:ashare-trend-buy/B | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/B | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/B | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/B | asof | 4/5 | +0.00% | +0.00% | +0.00% | 兴森科技(002436) +0.00% | 兴森科技(002436) +0.00% |
-| grade:ashare-trend-buy/C | 1d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/C | 5d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/C | 10d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/C | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/C | asof | 5/5 | +0.00% | +0.00% | +0.00% | 国电电力(600795) +0.00% | 国电电力(600795) +0.00% |
+| grade:ashare-trend-buy/B | asof | 5/5 | +0.01% | +0.00% | +20.00% | 中芯国际(688981) +0.03% | 兴森科技(002436) +0.00% |
 

@@ -1,7 +1,7 @@
 # ashare-ai-slowbull 2026-05-27 推荐历史回测报告
 
-生成日期：2026-06-01
-样本数量：12
+生成日期：2026-06-02
+样本数量：10
 明细CSV：`runs\ashare-ai-slowbull\2026-05-27\2026-05-27-backtest_report.csv`
 汇总CSV：`runs\ashare-ai-slowbull\2026-05-27\2026-05-27-backtest_report-summary.csv`
 
@@ -11,29 +11,29 @@
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| overall | 1d | 12/12 | +1.66% | +0.88% | +58.33% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
-| overall | 5d | 0/12 |  |  |  |  |  |
-| overall | 10d | 0/12 |  |  |  |  |  |
-| overall | 20d | 0/12 |  |  |  |  |  |
-| overall | asof | 12/12 | -1.08% | -3.12% | +33.33% | 剑桥科技(603083) +10.19% | 国科微(300672) -6.28% |
+| overall | 1d | 10/10 | +1.95% | +1.33% | +60.00% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
+| overall | 5d | 0/10 |  |  |  |  |  |
+| overall | 10d | 0/10 |  |  |  |  |  |
+| overall | 20d | 0/10 |  |  |  |  |  |
+| overall | asof | 10/10 | -6.65% | -6.41% | +10.00% | 光迅科技(002281) +0.79% | 景旺电子(603228) -12.67% |
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| source:ashare-ai-slowbull | 1d | 12/12 | +1.66% | +0.88% | +58.33% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
-| source:ashare-ai-slowbull | 5d | 0/12 |  |  |  |  |  |
-| source:ashare-ai-slowbull | 10d | 0/12 |  |  |  |  |  |
-| source:ashare-ai-slowbull | 20d | 0/12 |  |  |  |  |  |
-| source:ashare-ai-slowbull | asof | 12/12 | -1.08% | -3.12% | +33.33% | 剑桥科技(603083) +10.19% | 国科微(300672) -6.28% |
+| source:ashare-ai-slowbull | 1d | 10/10 | +1.95% | +1.33% | +60.00% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
+| source:ashare-ai-slowbull | 5d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 10d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | 20d | 0/10 |  |  |  |  |  |
+| source:ashare-ai-slowbull | asof | 10/10 | -6.65% | -6.41% | +10.00% | 光迅科技(002281) +0.79% | 景旺电子(603228) -12.67% |
 
 ## 按推荐日期
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
-| date:ashare-ai-slowbull/2026-05-27 | 1d | 12/12 | +1.66% | +0.88% | +58.33% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
-| date:ashare-ai-slowbull/2026-05-27 | 5d | 0/12 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-27 | 10d | 0/12 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-27 | 20d | 0/12 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-27 | asof | 12/12 | -1.08% | -3.12% | +33.33% | 剑桥科技(603083) +10.19% | 国科微(300672) -6.28% |
+| date:ashare-ai-slowbull/2026-05-27 | 1d | 10/10 | +1.95% | +1.33% | +60.00% | 剑桥科技(603083) +7.71% | 长电科技(600584) -1.65% |
+| date:ashare-ai-slowbull/2026-05-27 | 5d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-27 | 10d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-27 | 20d | 0/10 |  |  |  |  |  |
+| date:ashare-ai-slowbull/2026-05-27 | asof | 10/10 | -6.65% | -6.41% | +10.00% | 光迅科技(002281) +0.79% | 景旺电子(603228) -12.67% |
 
 ## 按档位
 
@@ -43,15 +43,10 @@
 | grade:ashare-ai-slowbull/A | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/A | asof | 5/5 | -0.39% | -3.78% | +40.00% | 剑桥科技(603083) +10.19% | 华工科技(000988) -4.98% |
+| grade:ashare-ai-slowbull/A | asof | 5/5 | -5.50% | -4.29% | +20.00% | 光迅科技(002281) +0.79% | 景旺电子(603228) -12.67% |
 | grade:ashare-ai-slowbull/B | 1d | 5/5 | +0.31% | -0.42% | +40.00% | 沪电股份(002463) +3.72% | 长电科技(600584) -1.65% |
 | grade:ashare-ai-slowbull/B | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/B | asof | 5/5 | +0.03% | -0.05% | +40.00% | 深南电路(002916) +4.51% | 长电科技(600584) -4.77% |
-| grade:ashare-ai-slowbull/C | 1d | 2/2 | +0.24% | +0.24% | +50.00% | 盛美上海(688082) +1.20% | 国科微(300672) -0.71% |
-| grade:ashare-ai-slowbull/C | 5d | 0/2 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | 10d | 0/2 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | 20d | 0/2 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/C | asof | 2/2 | -5.62% | -5.62% | +0.00% | 盛美上海(688082) -4.96% | 国科微(300672) -6.28% |
+| grade:ashare-ai-slowbull/B | asof | 5/5 | -7.81% | -8.32% | +0.00% | 深南电路(002916) -3.47% | 长电科技(600584) -12.20% |
 
