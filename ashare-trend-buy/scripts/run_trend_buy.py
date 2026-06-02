@@ -2,9 +2,11 @@ import csv
 import argparse
 import json
 import math
+import time
 import urllib.parse
 import urllib.request
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +17,11 @@ RUNS_ROOT = None
 SOURCE_TOP200 = None
 SCREENING_DATE = None
 NO_NETWORK = False
+CANDIDATE_SOURCE_LABEL = None
+KLINE_SOURCE_LABEL = "东方财富日K接口"
+KLINE_BACKEND = "eastmoney"
+TURNOVER_TOP_N = 200
+HOT_TOP_N = 100
 
 
 KLINE_URL = (
@@ -25,6 +32,24 @@ TOP_URL = (
     "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
     "Market_Center.getHQNodeData?page={page}&num=80&sort=amount&asc=0&node=hs_a&symbol=&_s_r_a=page"
 )
+EASTMONEY_TOP_URL = (
+    "http://push2.eastmoney.com/api/qt/clist/get?"
+    "pn={page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f6&"
+    "fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23&"
+    "fields=f12,f14,f2,f3,f6,f8,f20"
+)
+EASTMONEY_KLINE_URL = (
+    "http://push2his.eastmoney.com/api/qt/stock/kline/get?"
+    "secid={secid}&fields1=f1,f2,f3,f4,f5,f6&"
+    "fields2=f51,f52,f53,f54,f55,f56,f57&klt=101&fqt=1&beg=20250101&end={end_date}"
+)
+TENCENT_KLINE_URL = (
+    "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?"
+    "param={symbol},day,,,300,qfq"
+)
+HOT_RANK_URL = "https://emappdata.eastmoney.com/stockrank/getAllCurrentList"
+EASTMONEY_QUOTE_URL = "http://push2.eastmoney.com/api/qt/ulist.np/get"
+SINA_QUOTE_URL = "http://hq.sinajs.cn/list={symbols}"
 
 
 THEMES = {
@@ -136,9 +161,51 @@ FRONT_ROW_RANK = 80
 def fetch_json(url: str):
     if NO_NETWORK:
         raise RuntimeError("network disabled by --no-network")
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+            "Referer": "http://quote.eastmoney.com/",
+        },
+    )
+    last_exc = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(0.5)
+    raise last_exc
+
+
+def fetch_json_post(url: str, payload: dict):
+    if NO_NETWORK:
+        raise RuntimeError("network disabled by --no-network")
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json,text/plain,*/*",
+            "Content-Type": "application/json;charset=UTF-8",
+            "Referer": "https://guba.eastmoney.com/rank/",
+        },
+        method="POST",
+    )
+    last_exc = None
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(0.5)
+    raise last_exc
 
 
 def fnum(value, default=0.0):
@@ -153,6 +220,24 @@ def fnum(value, default=0.0):
 
 def stock_symbol(code: str) -> str:
     return ("sh" if code.startswith(("6", "9")) else "sz") + code
+
+
+def eastmoney_secid(symbol: str) -> str:
+    code = symbol[-6:]
+    market = "1" if symbol.startswith("sh") else "0"
+    return f"{market}.{code}"
+
+
+def eastmoney_rank_code(sc: str) -> str:
+    text = str(sc or "").strip().upper()
+    return text[-6:] if len(text) >= 6 else text
+
+
+def eastmoney_rank_secid(sc: str) -> str:
+    text = str(sc or "").strip().upper()
+    code = eastmoney_rank_code(text)
+    market = "1" if text.startswith("SH") or code.startswith(("6", "9")) else "0"
+    return f"{market}.{code}"
 
 
 def fetch_sina_top200():
@@ -191,9 +276,165 @@ def fetch_sina_top200():
     return rows[:200]
 
 
+def fetch_eastmoney_top200():
+    rows = []
+    seen = set()
+    for page in range(1, 3):
+        payload = fetch_json(EASTMONEY_TOP_URL.format(page=page))
+        for item in payload.get("data", {}).get("diff", []):
+            code = str(item.get("f12", ""))
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            rows.append(
+                {
+                    "rank": len(rows) + 1,
+                    "symbol": stock_symbol(code),
+                    "code": code,
+                    "name": item.get("f14", ""),
+                    "trade": fnum(item.get("f2")),
+                    "changepercent": fnum(item.get("f3")),
+                    "turnoverratio": fnum(item.get("f8")),
+                    "amount_yi": fnum(item.get("f6")) / 100000000,
+                    "mktcap_yi": fnum(item.get("f20")) / 100000000,
+                    "ticktime": SCREENING_DATE or "",
+                }
+            )
+            if len(rows) >= 200:
+                break
+        if len(rows) >= 200:
+            break
+    if not rows or rows[0]["amount_yi"] <= 0 or rows[0]["trade"] <= 0:
+        raise RuntimeError("Eastmoney ranking appears invalid: zero turnover or price")
+    return rows[:200]
+
+
+def fetch_eastmoney_quotes_by_secids(secids: list[str]) -> dict[str, dict]:
+    if not secids:
+        return {}
+    params = {
+        "ut": "f057cbcbce2a86e2866ab8877db1d059",
+        "fltt": "2",
+        "invt": "2",
+        "fields": "f14,f3,f12,f2,f6,f8,f20",
+        "secids": ",".join(secids),
+    }
+    url = EASTMONEY_QUOTE_URL + "?" + urllib.parse.urlencode(params)
+    payload = fetch_json(url)
+    quotes = {}
+    for item in payload.get("data", {}).get("diff", []):
+        code = str(item.get("f12", ""))
+        if code:
+            quotes[code] = item
+    return quotes
+
+
+def fetch_sina_quotes_by_symbols(symbols: list[str]) -> dict[str, dict]:
+    if not symbols:
+        return {}
+    req = urllib.request.Request(
+        SINA_QUOTE_URL.format(symbols=",".join(symbols)),
+        headers={"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn/"},
+    )
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        text = resp.read().decode("gbk", "replace")
+    quotes = {}
+    for line in [line for line in text.splitlines() if line.strip()]:
+        if "hq_str_" not in line:
+            continue
+        symbol = line.split("hq_str_", 1)[1].split("=", 1)[0]
+        code = symbol[-6:]
+        data = line.split('="', 1)[1].rsplit('"', 1)[0]
+        fields = data.split(",")
+        if len(fields) < 32 or not fields[0]:
+            continue
+        price = fnum(fields[3])
+        preclose = fnum(fields[2])
+        quotes[code] = {
+            "f14": fields[0],
+            "f2": price,
+            "f3": pct(price, preclose) or 0.0,
+            "f6": fnum(fields[9]),
+            "f8": 0.0,
+            "f20": 0.0,
+        }
+    return quotes
+
+
+def fetch_eastmoney_hot100():
+    payload = fetch_json_post(
+        HOT_RANK_URL,
+        {
+            "appId": "appId01",
+            "globalId": "786e4c21-70dc-435a-93bb-38",
+            "marketType": "",
+            "pageNo": 1,
+            "pageSize": HOT_TOP_N,
+        },
+    )
+    items = payload.get("data") or []
+    if not items:
+        raise RuntimeError("Eastmoney hot rank returned no rows")
+
+    secids = [eastmoney_rank_secid(item.get("sc", "")) for item in items if isinstance(item, dict)]
+    try:
+        quotes = fetch_eastmoney_quotes_by_secids(secids)
+    except Exception:
+        symbols = [stock_symbol(eastmoney_rank_code(item.get("sc", ""))) for item in items if isinstance(item, dict)]
+        quotes = fetch_sina_quotes_by_symbols(symbols)
+    rows = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sc = str(item.get("sc", ""))
+        code = eastmoney_rank_code(sc)
+        if not code or code in seen:
+            continue
+        seen.add(code)
+        rank = int(fnum(item.get("rk"), len(rows) + 1))
+        quote = quotes.get(code, {})
+        rows.append(
+            {
+                "rank": rank,
+                "source_rank": rank,
+                "hot_rank": rank,
+                "turnover_rank": "",
+                "rank_label": "人气排名",
+                "source_type": "hot_top100",
+                "source_title": "人气榜（热榜）前100",
+                "symbol": stock_symbol(code),
+                "code": code,
+                "name": quote.get("f14") or item.get("name", ""),
+                "trade": fnum(quote.get("f2")),
+                "changepercent": fnum(quote.get("f3")),
+                "turnoverratio": fnum(quote.get("f8")),
+                "amount_yi": fnum(quote.get("f6")) / 100000000,
+                "mktcap_yi": fnum(quote.get("f20")) / 100000000,
+                "ticktime": SCREENING_DATE or "",
+            }
+        )
+        if len(rows) >= HOT_TOP_N:
+            break
+    if not rows:
+        raise RuntimeError("Eastmoney hot rank produced no usable A-share rows")
+    return rows
+
+
 def read_top200():
+    global CANDIDATE_SOURCE_LABEL, KLINE_BACKEND, KLINE_SOURCE_LABEL
     if SOURCE_TOP200 is None:
-        return fetch_sina_top200()
+        try:
+            rows = fetch_sina_top200()
+            CANDIDATE_SOURCE_LABEL = "新浪实时成交额排名"
+            return rows
+        except Exception as exc:
+            rows = fetch_eastmoney_top200()
+            CANDIDATE_SOURCE_LABEL = f"东方财富实时成交额排名（新浪失败：{exc.__class__.__name__}）"
+            KLINE_BACKEND = "eastmoney"
+            KLINE_SOURCE_LABEL = "东方财富日K接口"
+            return rows
+    CANDIDATE_SOURCE_LABEL = str(SOURCE_TOP200)
     with SOURCE_TOP200.open("r", encoding="utf-8-sig", newline="") as f:
         rows = list(csv.DictReader(f))
     normalized = []
@@ -215,7 +456,107 @@ def read_top200():
     return normalized
 
 
+def mark_source(rows: list[dict], source_type: str, source_title: str, rank_label: str):
+    marked = []
+    for row in rows:
+        copy = dict(row)
+        copy.update(
+            {
+                "source_type": source_type,
+                "source_title": source_title,
+                "rank_label": rank_label,
+                "source_rank": copy.get("rank", ""),
+            }
+        )
+        if source_type == "turnover_top200":
+            copy["turnover_rank"] = copy.get("rank", "")
+            copy["hot_rank"] = ""
+        marked.append(copy)
+    return marked
+
+
+def read_turnover_top200():
+    rows = read_top200()[:TURNOVER_TOP_N]
+    return mark_source(rows, "turnover_top200", "成交额前200", "成交额排名")
+
+
+def read_hot_top100():
+    return fetch_eastmoney_hot100()
+
+
+def read_candidate_pools():
+    pools = []
+    try:
+        rows = read_turnover_top200()
+        pools.append(
+            {
+                "key": "turnover_top200",
+                "title": "成交额前200",
+                "source_label": candidate_source_label(),
+                "rows": rows,
+                "error": "",
+            }
+        )
+    except Exception as exc:
+        pools.append(
+            {
+                "key": "turnover_top200",
+                "title": "成交额前200",
+                "source_label": "成交额排名",
+                "rows": [],
+                "error": f"{exc.__class__.__name__}: {exc}",
+            }
+        )
+
+    try:
+        rows = read_hot_top100()
+        pools.append(
+            {
+                "key": "hot_top100",
+                "title": "人气榜（热榜）前100",
+                "source_label": "东方财富个股人气榜 getAllCurrentList",
+                "rows": rows,
+                "error": "",
+            }
+        )
+    except Exception as exc:
+        pools.append(
+            {
+                "key": "hot_top100",
+                "title": "人气榜（热榜）前100",
+                "source_label": "东方财富个股人气榜 getAllCurrentList",
+                "rows": [],
+                "error": f"{exc.__class__.__name__}: {exc}",
+            }
+        )
+
+    if not any(pool["rows"] for pool in pools):
+        errors = "；".join(f"{pool['title']} {pool['error']}" for pool in pools)
+        raise RuntimeError(f"no candidate source available: {errors}")
+    return pools
+
+
 def fetch_kline(symbol: str):
+    global KLINE_BACKEND, KLINE_SOURCE_LABEL
+    if KLINE_BACKEND == "eastmoney":
+        try:
+            return fetch_eastmoney_kline(symbol)
+        except Exception as exc:
+            KLINE_SOURCE_LABEL = f"腾讯前复权日K接口（东方财富失败：{exc.__class__.__name__}）"
+            return fetch_tencent_kline(symbol)
+    try:
+        return fetch_sina_kline(symbol)
+    except Exception as exc:
+        KLINE_BACKEND = "eastmoney"
+        KLINE_SOURCE_LABEL = f"东方财富日K接口（新浪失败：{exc.__class__.__name__}）"
+        try:
+            return fetch_eastmoney_kline(symbol)
+        except Exception as eastmoney_exc:
+            KLINE_SOURCE_LABEL = f"腾讯前复权日K接口（新浪失败：{exc.__class__.__name__}，东方财富失败：{eastmoney_exc.__class__.__name__}）"
+            return fetch_tencent_kline(symbol)
+
+
+def fetch_sina_kline(symbol: str):
     payload = fetch_json(KLINE_URL.format(symbol=urllib.parse.quote(symbol)))
     rows = []
     for item in payload:
@@ -226,6 +567,54 @@ def fetch_kline(symbol: str):
             "low": fnum(item.get("low")),
             "close": fnum(item.get("close")),
             "volume": fnum(item.get("volume")),
+        }
+        if row["date"] and row["close"] > 0:
+            rows.append(row)
+    if len(rows) < 60:
+        raise RuntimeError(f"日K不足: {len(rows)}")
+    return rows, payload
+
+
+def fetch_eastmoney_kline(symbol: str):
+    time.sleep(0.12)
+    url = EASTMONEY_KLINE_URL.format(secid=eastmoney_secid(symbol), end_date=SCREENING_DATE.replace("-", ""))
+    payload = fetch_json(url)
+    klines = payload.get("data", {}).get("klines") or []
+    rows = []
+    for line in klines:
+        parts = line.split(",")
+        if len(parts) < 6:
+            continue
+        row = {
+            "date": parts[0],
+            "open": fnum(parts[1]),
+            "close": fnum(parts[2]),
+            "high": fnum(parts[3]),
+            "low": fnum(parts[4]),
+            "volume": fnum(parts[5]),
+        }
+        if row["date"] and row["close"] > 0:
+            rows.append(row)
+    if len(rows) < 60:
+        raise RuntimeError(f"日K不足: {len(rows)}")
+    return rows, payload
+
+
+def fetch_tencent_kline(symbol: str):
+    payload = fetch_json(TENCENT_KLINE_URL.format(symbol=urllib.parse.quote(symbol)))
+    stock_data = payload.get("data", {}).get(symbol, {})
+    klines = stock_data.get("qfqday") or stock_data.get("day") or []
+    rows = []
+    for item in klines:
+        if len(item) < 6:
+            continue
+        row = {
+            "date": item[0],
+            "open": fnum(item[1]),
+            "close": fnum(item[2]),
+            "high": fnum(item[3]),
+            "low": fnum(item[4]),
+            "volume": fnum(item[5]),
         }
         if row["date"] and row["close"] > 0:
             rows.append(row)
@@ -410,7 +799,12 @@ def score_candidate(row, ind):
     theme = infer_theme(row)
     main_theme = any(key in theme for key in MAIN_THEME_KEYS)
     primary_theme = any(key in theme for key in PRIMARY_THEME_KEYS)
-    front_row = main_theme and row["rank"] <= FRONT_ROW_RANK and row["amount_yi"] >= FRONT_ROW_AMOUNT_YI
+    source_type = row.get("source_type", "turnover_top200")
+    source_rank = int(fnum(row.get("source_rank", row.get("rank", 999)), 999))
+    turnover_front = source_type == "turnover_top200" and source_rank <= TURNOVER_TOP_N
+    hot_front = source_type == "hot_top100" and source_rank <= HOT_TOP_N
+    turnover_active = row["amount_yi"] >= FRONT_ROW_AMOUNT_YI
+    front_row = main_theme and (turnover_front or hot_front or (source_rank <= FRONT_ROW_RANK and turnover_active))
     trend_stock = ma20 > ma60 and ma10 >= ma20 * 0.98
     ma20_state = ma20_stabilization_state(ind)
     ma20_stabilizing = trend_stock and ma20_state in ("20日线强企稳", "20日线可观察") and ind["ret5_pct"] > -8
@@ -439,7 +833,7 @@ def score_candidate(row, ind):
     vol += 3 if not (row["changepercent"] < -4 and vr > 1.5) else 0
     vol += 3 if row["turnoverratio"] <= 20 else 1
 
-    theme_score = 15 if front_row and primary_theme else 13 if primary_theme else 11 if main_theme else 8
+    theme_score = 15 if front_row and primary_theme else 14 if hot_front and main_theme else 13 if primary_theme else 11 if main_theme else 8
     support = 0
     support += 5 if close > ma20 else 1
     support += 4 if ind["dist20_pct"] <= 15 else 1
@@ -497,8 +891,10 @@ def score_candidate(row, ind):
     if "死叉" in ind["macd"] and close < ma20:
         flags.append("MACD死叉叠加破位")
         severe_flags.append("MACD死叉叠加破位")
-    if not front_row and not main_theme and row["rank"] > 120:
+    if not front_row and not main_theme and source_type == "turnover_top200" and source_rank > 120:
         flags.append("细分前排/人气不足")
+    if not front_row and not main_theme and source_type == "hot_top100":
+        flags.append("热榜有关注但主线辨识度不足")
     if not primary_theme and total >= 85:
         flags.append("非当前验证主线，A档需回避")
     a_ready = (
@@ -591,6 +987,12 @@ def score_candidate(row, ind):
         "flags": "；".join(flags),
         "severe_flags": "；".join(severe_flags),
         "ma20_state": ma20_state,
+        "source_type": source_type,
+        "source_title": row.get("source_title", "成交额前200"),
+        "source_rank": source_rank,
+        "rank_label": row.get("rank_label", "成交额排名"),
+        "turnover_rank": row.get("turnover_rank", ""),
+        "hot_rank": row.get("hot_rank", ""),
         "front_row_state": "细分前排/高人气" if front_row else "主线活跃" if main_theme else "辨识度待验证",
         "structure": "平台突破/前高附近" if breakout else ma20_state if ma20_stabilizing else "均线回踩附近" if near_support else "偏离均线较远" if ind["dist20_pct"] > 18 else "震荡修复",
         "trend_state": "多头排列" if ma5 > ma10 > ma20 and close > ma20 else "修复中" if close > ma20 else "弱势",
@@ -620,12 +1022,18 @@ def enrich_relative_context(rows):
 
 
 def candidate_source_label():
+    if CANDIDATE_SOURCE_LABEL:
+        return CANDIDATE_SOURCE_LABEL
     if SOURCE_TOP200 is None:
         return "新浪实时成交额排名"
     try:
         return str(SOURCE_TOP200.relative_to(ROOT))
     except ValueError:
         return str(SOURCE_TOP200)
+
+
+def kline_source_label():
+    return KLINE_SOURCE_LABEL
 
 
 def generate_report(rows, summary):
@@ -651,6 +1059,7 @@ def generate_report(rows, summary):
     latest_dates = summary.get("latest_kline_dates") or {}
     latest_date_text = "、".join(f"{day}:{count}只" for day, count in latest_dates.items()) if latest_dates else "无"
     source_label = candidate_source_label()
+    kline_label = kline_source_label()
     missing_count = summary["candidate_count"] - summary["calculated_count"]
     hard_removed = [r for r in x_rows if r.get("severe_flags")]
 
@@ -663,7 +1072,7 @@ def generate_report(rows, summary):
     lines.append("")
     lines.append("## 数据说明")
     lines.append("")
-    lines.append(f"- 数据来源：候选池 `{source_label}`；日K来自新浪 240 分钟日线接口；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
+    lines.append(f"- 数据来源：候选池 `{source_label}`；日K来自{kline_label}；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
     lines.append(f"- 数据完整性：候选 {summary['candidate_count']} 只，完成指标计算 {summary['calculated_count']} 只，未完成 {missing_count} 只；最新K线日期分布：{latest_date_text}。")
     lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、20日线企稳分层、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位、板块内成交前排/人气和右侧趋势评分。")
     lines.append("- 分档纪律：A档必须同时满足主线纯度、不过热、靠近支撑、量能可控；B档作为主要等待池；C档只跟踪，不进入正式短名单。")
@@ -741,7 +1150,251 @@ def generate_report(rows, summary):
     lines.append("## 参考来源")
     lines.append("")
     lines.append(f"- 候选池：`{source_label}`")
-    lines.append("- K线与指标：新浪 240 分钟日线接口；本地脚本计算 MA、量比、MACD、KDJ。")
+    lines.append(f"- K线与指标：{kline_label}；本地脚本计算 MA、量比、MACD、KDJ。")
+    return "\n".join(lines) + "\n"
+
+
+TIER_ORDER = {"A": 5, "B": 4, "C": 3, "过热跟踪": 2, "剔除": 1}
+
+
+def tier_bucket(rows: list[dict], tier: str) -> list[dict]:
+    return sorted(
+        [row for row in rows if not row.get("error") and row.get("tier") == tier],
+        key=lambda row: row.get("composite_score", row.get("score", 0)),
+        reverse=True,
+    )
+
+
+def display_rows_for(rows: list[dict]) -> list[dict]:
+    display = []
+    for tier in ("A", "B", "C"):
+        display.extend(tier_bucket(rows, tier)[:5])
+    return display
+
+
+def names_for(rows: list[dict]) -> str:
+    return "、".join(row["name"] for row in rows) if rows else "无"
+
+
+def rank_text(row: dict) -> str:
+    label = row.get("rank_label", "排名")
+    rank = row.get("source_rank", row.get("rank", ""))
+    parts = [f"{label}{rank}"]
+    if row.get("turnover_rank") and label != "成交额排名":
+        parts.append(f"成交额排名{row['turnover_rank']}")
+    if row.get("hot_rank") and label != "人气排名":
+        parts.append(f"人气排名{row['hot_rank']}")
+    return "；".join(str(part) for part in parts if part)
+
+
+def merge_recommendations(pool_outputs: list[dict]) -> list[dict]:
+    by_code = {}
+    for pool in pool_outputs:
+        for row in pool["results"]:
+            if row.get("error"):
+                continue
+            by_code.setdefault(row["code"], []).append(row)
+
+    merged = []
+    for rows in by_code.values():
+        best = sorted(
+            rows,
+            key=lambda row: (TIER_ORDER.get(row.get("tier"), 0), row.get("score", 0)),
+            reverse=True,
+        )[0]
+        source_titles = sorted({row.get("source_title", "") for row in rows if row.get("source_title")})
+        source_types = {row.get("source_type") for row in rows}
+        ab_rows = [row for row in rows if row.get("tier") in ("A", "B")]
+        if any(row.get("tier") == "A" for row in rows):
+            combined_tier = "A"
+        elif any(row.get("tier") == "B" for row in rows):
+            combined_tier = "B"
+        elif any(row.get("tier") == "C" for row in rows):
+            combined_tier = "C"
+        elif any(row.get("tier") == "过热跟踪" for row in rows):
+            combined_tier = "过热跟踪"
+        else:
+            combined_tier = "剔除"
+        bonus = 0
+        if len(source_types) >= 2:
+            bonus += 8
+        if len(ab_rows) >= 2:
+            bonus += 4
+        composite_score = min(100, int(best.get("score", 0)) + bonus)
+        merged.append(
+            {
+                **best,
+                "tier": combined_tier,
+                "state": f"综合-{combined_tier}",
+                "combined_sources": " + ".join(source_titles),
+                "source_count": len(source_types),
+                "source_grades": "；".join(
+                    f"{row.get('source_title')}:{row.get('tier')}({row.get('score')})" for row in rows
+                ),
+                "composite_score": composite_score,
+            }
+        )
+    return sorted(
+        merged,
+        key=lambda row: (
+            TIER_ORDER.get(row.get("tier"), 0),
+            row.get("source_count", 0),
+            row.get("composite_score", 0),
+        ),
+        reverse=True,
+    )
+
+
+def append_result_table(lines: list[str], rows: list[dict], *, combined: bool = False):
+    if combined:
+        lines.append("| 档位 | 状态 | 排名 | 标的 | 代码 | 综合来源 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
+        lines.append("|---|---|---|---|---:|---|---|---|---|---|---|---|---|---:|---|---|")
+    else:
+        lines.append("| 档位 | 状态 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
+        lines.append("|---|---|---|---|---:|---|---|---|---|---|---|---|---:|---|---|")
+    for row in rows:
+        macd_kdj = f"{row['macd']}；{row['kdj']}，K={row['k']}/D={row['d']}/J={row['j']}"
+        key_data = (
+            f"成交额{row['amount_yi']:.2f}亿，换手{row['turnoverratio']:.2f}%，"
+            f"涨跌幅{row['changepercent']:.2f}%，距20日线{row['dist20_pct']:.2f}%，"
+            f"{row['ma20_state']}，K线{row['date']}"
+        )
+        vol = f"量比{row['vol_ratio']:.2f}；{rank_text(row)}"
+        tech = f"{row['trend_state']}，{row['structure']}，距20日线{row['dist20_pct']:.2f}%"
+        logic = f"{row['theme']}主线；{row['front_row_state']}；{row['tier_reason']}；基本面需另行复核"
+        score = row.get("composite_score", row.get("score", ""))
+        if row["tier"] == "剔除" and row.get("severe_flags"):
+            score = f"{score}（原始）"
+        buy_watch = f"暂不观察；{row['tier_reason']}" if row["tier"] == "剔除" and row.get("severe_flags") else row["buy_watch"]
+        rank = rank_text(row)
+        if combined:
+            lines.append(
+                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {row['name']} | {row['code']} | "
+                f"{row.get('combined_sources', row.get('source_title', ''))} | {row['theme']} | {key_data} | {tech} | "
+                f"{macd_kdj} | {vol} | {logic}；分源结果：{row.get('source_grades', '')} | {row['support']} | "
+                f"{score} | {row['position_plan']} | {buy_watch} |"
+            )
+        else:
+            lines.append(
+                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {row['name']} | {row['code']} | "
+                f"{row['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {row['support']} | "
+                f"{score} | {row['position_plan']} | {buy_watch} |"
+            )
+
+
+def source_conclusion(rows: list[dict]) -> list[str]:
+    return [
+        f"A档：{names_for(tier_bucket(rows, 'A')[:5])}",
+        f"B档：{names_for(tier_bucket(rows, 'B')[:5])}",
+        f"C档：{names_for(tier_bucket(rows, 'C')[:5])}",
+    ]
+
+
+def excluded_summary(rows: list[dict]) -> str:
+    hot = tier_bucket(rows, "过热跟踪")[:5]
+    removed = tier_bucket(rows, "剔除")[:5]
+    parts = []
+    if hot:
+        parts.append(f"过热未纳入ABC：{names_for(hot)}")
+    if removed:
+        parts.append(f"剔除/暂不纳入：{names_for(removed)}")
+    return "；".join(parts) if parts else "无"
+
+
+def append_commentary(lines: list[str], rows: list[dict], *, combined: bool = False):
+    display_rows = display_rows_for(rows)
+    if not display_rows:
+        lines.append("无 A/B/C 档标的。")
+        lines.append("")
+        return
+    for row in display_rows:
+        risk = row["flags"] if row["flags"] else "主要风险是板块高位波动和买点未经二次确认"
+        source_text = ""
+        if combined:
+            source_text = f"综合来源为{row.get('combined_sources', row.get('source_title', ''))}，分源结果为{row.get('source_grades', '')}。"
+        lines.append(
+            f"{row['name']}：{source_text}方向/主线为{row['theme']}，{rank_text(row)}，"
+            f"成交额{row['amount_yi']:.2f}亿、换手{row['turnoverratio']:.2f}%、距20日线{row['dist20_pct']:.2f}%。"
+            f"趋势结构是{row['trend_state']}、{row['structure']}；MACD/KDJ为{row['macd']}、{row['kdj']}，只作辅助确认。"
+            f"买点观察是{row['buy_watch']}；支撑/失效看{row['support']}。档位原因：{row['tier_reason']}。主要风险：{risk}。"
+        )
+        lines.append("")
+
+
+def append_abc_report_block(lines: list[str], title: str, rows: list[dict], *, combined: bool = False):
+    lines.append(f"## {title}")
+    lines.append("")
+    lines.append("### 一、筛选结论")
+    lines.append("")
+    for item in source_conclusion(rows):
+        lines.append(f"- {item}")
+    lines.append(f"- 未纳入ABC说明：{excluded_summary(rows)}")
+    lines.append("")
+    lines.append("### 二、核心表格")
+    lines.append("")
+    append_result_table(lines, display_rows_for(rows), combined=combined)
+    lines.append("")
+    lines.append("### 三、逐个点评")
+    lines.append("")
+    append_commentary(lines, rows, combined=combined)
+    lines.append("### 四、最终短名单")
+    lines.append("")
+    lines.append("```text")
+    lines.append(f"A档，最优先观察：{names_for(tier_bucket(rows, 'A')[:5])}")
+    lines.append(f"B档，次优先等待：{names_for(tier_bucket(rows, 'B')[:5])}")
+    lines.append(f"C档，只跟踪不追：{names_for(tier_bucket(rows, 'C')[:5])}")
+    lines.append("```")
+    lines.append("")
+
+
+def generate_multi_source_report(pool_outputs: list[dict], combined_rows: list[dict], summary: dict):
+    all_valid = [row for pool in pool_outputs for row in pool["results"] if not row.get("error")]
+    top_themes = Counter(row["theme"] for row in all_valid).most_common(6)
+    theme_text = "、".join(f"{theme}({count})" for theme, count in top_themes) if top_themes else "无"
+    latest_dates = Counter(row["date"] for row in all_valid)
+    latest_date_text = "、".join(f"{day}:{count}只" for day, count in latest_dates.items()) if latest_dates else "无"
+    kline_label = kline_source_label()
+
+    lines = []
+    lines.append("# A股右侧趋势买入标准筛选结果")
+    lines.append("")
+    lines.append(f"筛选日期：{SCREENING_DATE}")
+    lines.append("执行技能：ashare-trend-buy")
+    lines.append("结果类型：研究观察池，不是最终买入名单")
+    lines.append("")
+    lines.append("## 数据说明")
+    lines.append("")
+    for pool in pool_outputs:
+        missing = pool["candidate_count"] - pool["calculated_count"]
+        status = f"候选 {pool['candidate_count']} 只，完成指标计算 {pool['calculated_count']} 只，未完成 {missing} 只"
+        if pool.get("error"):
+            status += f"；数据源失败：{pool['error']}"
+        lines.append(f"- {pool['title']}：`{pool['source_label']}`；{status}。")
+    lines.append(f"- 日K来源：{kline_label}；最新K线日期分布：{latest_date_text}；结果保存到 `runs/ashare-trend-buy/{SCREENING_DATE}/`。")
+    lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、20日线企稳分层、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位、板块内成交前排/人气和右侧趋势评分。")
+    lines.append("- 合并口径：同一股票在两个来源中去重，优先保留 A/B 档和高分结果；同时出现在成交额前200与热榜前100的标的给予综合确认加权，但不因为热度直接放宽过热、破位或失效条件。")
+    lines.append(f"- 市场环境：候选主线集中在 {theme_text}。")
+    lines.append("")
+
+    for pool in pool_outputs:
+        append_abc_report_block(lines, f"{pool['title']}筛选结果", pool["results"])
+    append_abc_report_block(lines, "综合推荐", combined_rows, combined=True)
+
+    lines.append("## 买点观察与失效条件")
+    lines.append("")
+    lines.append("- A/B档共同纪律：不把MACD/KDJ单独作为买点，必须结合趋势结构、量价、20日线企稳状态、支撑距离和细分前排/人气。")
+    lines.append("- 成交额前200用于识别资金承载和高流动性；热榜前100用于识别关注度和潜在扩散，但热度不能替代趋势、支撑和不过热条件。")
+    lines.append("- 均线回踩：优先观察回踩10日/20日线不破，缩量企稳后温和放量转强。")
+    lines.append("- 平台突破：观察突破后不快速跌回平台，或回踩突破位缩量企稳。")
+    lines.append("- 统一失效：收盘跌破20日线且1-2日不能收回、放量破平台、KDJ高位死叉叠加价格走弱、主线板块放量破位。")
+    lines.append("")
+    lines.append("## 参考来源")
+    lines.append("")
+    for pool in pool_outputs:
+        lines.append(f"- {pool['title']}：`{pool['source_label']}`")
+    lines.append(f"- K线与指标：{kline_label}；本地脚本计算 MA、量比、MACD、KDJ。")
+    lines.append("")
+    lines.append("以上为研究观察池，不构成个性化投资建议，实际交易需结合自身风险承受能力和最新行情。")
     return "\n".join(lines) + "\n"
 
 
@@ -750,6 +1403,8 @@ def parse_args():
     parser.add_argument("--date", default=date.today().isoformat(), help="Screening date, YYYY-MM-DD.")
     parser.add_argument("--runs-dir", default="runs", help="Run artifact root directory.")
     parser.add_argument("--top200", help="Optional verified same-day turnover top-200 CSV.")
+    parser.add_argument("--max-candidates", type=int, help="Optional per-source cap for fast runs when data sources throttle.")
+    parser.add_argument("--workers", type=int, default=12, help="Parallel workers for daily K-line fetches.")
     parser.add_argument("--no-network", action="store_true", help="Disable network access.")
     return parser.parse_args()
 
@@ -779,32 +1434,83 @@ def configure(args):
 def main():
     args = parse_args()
     configure(args)
-    candidates = read_top200()
-    results = []
-    for row in candidates:
-        try:
-            krows, _payload = fetch_kline(row["symbol"])
-            ind = indicators(krows)
-            results.append(score_candidate(row, ind))
-        except Exception as exc:
-            results.append({**row, "tier": "初筛观察池", "error": str(exc)})
+    pools = read_candidate_pools()
+    for pool in pools:
+        if args.max_candidates:
+            pool["rows"] = pool["rows"][: args.max_candidates]
 
-    calculated = [r for r in results if not r.get("error")]
+    symbol_rows = {}
+    for pool in pools:
+        for row in pool["rows"]:
+            symbol_rows.setdefault(row["symbol"], row)
+
+    kline_cache = {}
+    workers = max(1, int(args.workers or 1))
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        future_to_symbol = {
+            executor.submit(fetch_kline, row["symbol"]): row["symbol"]
+            for row in symbol_rows.values()
+        }
+        for future in as_completed(future_to_symbol):
+            symbol = future_to_symbol[future]
+            try:
+                kline_cache[symbol] = future.result()
+            except Exception as exc:
+                kline_cache[symbol] = exc
+
+    pool_outputs = []
+    for pool in pools:
+        candidates = pool["rows"]
+        results = []
+        for row in candidates:
+            try:
+                cached = kline_cache[row["symbol"]]
+                if isinstance(cached, Exception):
+                    raise cached
+                krows, _payload = cached
+                ind = indicators(krows)
+                results.append(score_candidate(row, ind))
+            except Exception as exc:
+                results.append({**row, "tier": "初筛观察池", "error": str(exc)})
+        enrich_relative_context(results)
+        calculated = [r for r in results if not r.get("error")]
+        pool_outputs.append(
+            {
+                **pool,
+                "candidate_count": len(candidates),
+                "calculated_count": len(calculated),
+                "results": results,
+                "tier_counts": dict(Counter(r["tier"] for r in calculated)),
+            }
+        )
+
+    combined_rows = merge_recommendations(pool_outputs)
+    calculated = [row for pool in pool_outputs for row in pool["results"] if not row.get("error")]
     summary = {
         "screening_date": SCREENING_DATE,
-        "source_top200": candidate_source_label(),
-        "candidate_count": len(candidates),
+        "sources": [
+            {
+                "key": pool["key"],
+                "title": pool["title"],
+                "source_label": pool["source_label"],
+                "candidate_count": pool["candidate_count"],
+                "calculated_count": pool["calculated_count"],
+                "error": pool.get("error", ""),
+                "tier_counts": pool["tier_counts"],
+            }
+            for pool in pool_outputs
+        ],
+        "candidate_count": sum(pool["candidate_count"] for pool in pool_outputs),
         "calculated_count": len(calculated),
         "latest_kline_dates": dict(Counter(r["date"] for r in calculated)),
         "tier_counts": dict(Counter(r["tier"] for r in calculated)),
+        "combined_count": len(combined_rows),
     }
-    enrich_relative_context(results)
-    report = generate_report(results, summary)
+    report = generate_multi_source_report(pool_outputs, combined_rows, summary)
     (RUN_DIR / f"{SCREENING_DATE}.md").write_text(report, encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    tier_order = {"A": 5, "B": 4, "C": 3, "过热跟踪": 2, "剔除": 1}
-    for row in sorted(calculated, key=lambda r: (tier_order.get(r["tier"], 0), r["score"]), reverse=True)[:25]:
-        print(row["tier"], row["score"], row["code"], row["name"], row["theme"], row["date"])
+    for row in combined_rows[:25]:
+        print(row["tier"], row.get("composite_score", row["score"]), row["code"], row["name"], row["theme"], row["date"], row.get("combined_sources", ""))
 
 if __name__ == "__main__":
     main()

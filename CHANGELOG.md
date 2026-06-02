@@ -1,5 +1,13 @@
 # Changelog
 
+## 2026-06-02
+
+- runs: Added the 2026-06-02 `ashare-ai-slowbull` and `ashare-trend-buy` run outputs.
+- runs: Refreshed historical backtest reports for `ashare-ai-slowbull` and `ashare-trend-buy`, including the aggregate slowbull backtest report through 2026-06-01.
+- skills: Updated `ashare-trend-buy` skill documentation and `run_trend_buy.py`.
+- skills: Added the root README with project structure, skill overview, quick-start commands, data conventions, and disclaimer.
+- notes: `main` is ahead of `origin/main`; no remote pull or push was performed.
+
 ## 2026-06-01
 
 - runs: Added the latest generated A-share run outputs on the `runs` branch.
