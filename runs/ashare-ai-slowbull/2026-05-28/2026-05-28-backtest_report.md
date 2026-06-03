@@ -1,6 +1,6 @@
 # ashare-ai-slowbull 2026-05-28 推荐历史回测报告
 
-生成日期：2026-06-02
+生成日期：2026-06-03
 样本数量：10
 明细CSV：`runs\ashare-ai-slowbull\2026-05-28\2026-05-28-backtest_report.csv`
 汇总CSV：`runs\ashare-ai-slowbull\2026-05-28\2026-05-28-backtest_report-summary.csv`
@@ -15,7 +15,7 @@
 | overall | 5d | 0/10 |  |  |  |  |  |
 | overall | 10d | 0/10 |  |  |  |  |  |
 | overall | 20d | 0/10 |  |  |  |  |  |
-| overall | asof | 10/10 | -9.25% | -9.03% | +0.00% | 深南电路(002916) -4.01% | 长光华芯(688048) -14.05% |
+| overall | asof | 10/10 | -4.72% | -6.08% | +20.00% | 光库科技(300620) +9.23% | 长光华芯(688048) -10.59% |
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
@@ -23,7 +23,7 @@
 | source:ashare-ai-slowbull | 5d | 0/10 |  |  |  |  |  |
 | source:ashare-ai-slowbull | 10d | 0/10 |  |  |  |  |  |
 | source:ashare-ai-slowbull | 20d | 0/10 |  |  |  |  |  |
-| source:ashare-ai-slowbull | asof | 10/10 | -9.25% | -9.03% | +0.00% | 深南电路(002916) -4.01% | 长光华芯(688048) -14.05% |
+| source:ashare-ai-slowbull | asof | 10/10 | -4.72% | -6.08% | +20.00% | 光库科技(300620) +9.23% | 长光华芯(688048) -10.59% |
 
 ## 按推荐日期
 
@@ -33,7 +33,7 @@
 | date:ashare-ai-slowbull/2026-05-28 | 5d | 0/10 |  |  |  |  |  |
 | date:ashare-ai-slowbull/2026-05-28 | 10d | 0/10 |  |  |  |  |  |
 | date:ashare-ai-slowbull/2026-05-28 | 20d | 0/10 |  |  |  |  |  |
-| date:ashare-ai-slowbull/2026-05-28 | asof | 10/10 | -9.25% | -9.03% | +0.00% | 深南电路(002916) -4.01% | 长光华芯(688048) -14.05% |
+| date:ashare-ai-slowbull/2026-05-28 | asof | 10/10 | -4.72% | -6.08% | +20.00% | 光库科技(300620) +9.23% | 长光华芯(688048) -10.59% |
 
 ## 按档位
 
@@ -43,10 +43,10 @@
 | grade:ashare-ai-slowbull/A | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/A | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/A | asof | 5/5 | -9.09% | -7.90% | +0.00% | 佰维存储(688525) -6.25% | 华工科技(000988) -13.62% |
+| grade:ashare-ai-slowbull/A | asof | 5/5 | -6.05% | -5.67% | +0.00% | 佰维存储(688525) -2.97% | 华工科技(000988) -9.89% |
 | grade:ashare-ai-slowbull/B | 1d | 5/5 | -1.98% | -2.04% | +20.00% | 深南电路(002916) +3.92% | 华丰科技(688629) -6.74% |
 | grade:ashare-ai-slowbull/B | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-ai-slowbull/B | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-ai-slowbull/B | asof | 5/5 | -9.40% | -10.16% | +0.00% | 深南电路(002916) -4.01% | 长光华芯(688048) -14.05% |
+| grade:ashare-ai-slowbull/B | asof | 5/5 | -3.39% | -6.93% | +40.00% | 光库科技(300620) +9.23% | 长光华芯(688048) -10.59% |
 

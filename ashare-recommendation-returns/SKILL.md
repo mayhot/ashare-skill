@@ -15,6 +15,12 @@ Run the bundled script from the repository root:
 python ashare-recommendation-returns/scripts/calc_recommendation_returns.py --repo-root . --as-of 2026-05-22
 ```
 
+For historical backtests, do not process the current day's source run folder by default. Keep `--as-of` as the return cutoff date, but set `--end-date` to the latest prior source date unless the user explicitly asks to include today's recommendations:
+
+```powershell
+python ashare-recommendation-returns/scripts/calc_recommendation_returns.py --repo-root . --as-of 2026-06-03 --end-date 2026-06-02
+```
+
 The script processes these source run folders:
 
 ```text
@@ -99,6 +105,7 @@ For a full slowbull-style A/B/C review, run with `--source-skill ashare-ai-slowb
 ## Operating Notes
 
 - Use `--start-date` and `--end-date` to process only part of history.
+- When the user asks to execute a backtest without specifying dates, exclude the current day's source folders and pass `--end-date` as the latest date before `--as-of`. Only include same-day source folders when the user explicitly requests it.
 - Use `--source-skill ashare-trend-buy` or `--source-skill ashare-ai-slowbull` to process one skill.
 - Use `--dry-run` to inspect extraction and calculations without writing CSV files.
 - Use `--no-fetch` for offline validation. This only uses local base prices and marks forward returns as unavailable unless the as-of date equals the local price date.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2026-06-03
+
+- skills: Added `ashare-volume-doubled-uptrend` for full A-share screening of 6-month uptrends with recent doubled-volume up days and next-day half-gain hold confirmation.
+
 ## 2026-06-02
 
 - runs: Added the 2026-06-02 `ashare-ai-slowbull` and `ashare-trend-buy` run outputs.

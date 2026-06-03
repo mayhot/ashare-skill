@@ -1,6 +1,6 @@
 # ashare-trend-buy 2026-05-27 推荐历史回测报告
 
-生成日期：2026-06-02
+生成日期：2026-06-03
 样本数量：10
 明细CSV：`runs\ashare-trend-buy\2026-05-27\2026-05-27_backtest_report.csv`
 汇总CSV：`runs\ashare-trend-buy\2026-05-27\2026-05-27_backtest_report-summary.csv`
@@ -15,7 +15,7 @@
 | overall | 5d | 0/10 |  |  |  |  |  |
 | overall | 10d | 0/10 |  |  |  |  |  |
 | overall | 20d | 0/10 |  |  |  |  |  |
-| overall | asof | 10/10 | -4.62% | -4.22% | +30.00% | 工业富联(601138) +5.24% | 东山精密(002384) -14.16% |
+| overall | asof | 10/10 | -2.81% | -5.88% | +40.00% | 工业富联(601138) +14.17% | 再升科技(603601) -19.82% |
 
 | 分组 | 周期 | 可用/总数 | 平均 | 中位数 | 胜率 | 最好 | 最差 |
 |---|---|---:|---:|---:|---:|---|---|
@@ -23,7 +23,7 @@
 | source:ashare-trend-buy | 5d | 0/10 |  |  |  |  |  |
 | source:ashare-trend-buy | 10d | 0/10 |  |  |  |  |  |
 | source:ashare-trend-buy | 20d | 0/10 |  |  |  |  |  |
-| source:ashare-trend-buy | asof | 10/10 | -4.62% | -4.22% | +30.00% | 工业富联(601138) +5.24% | 东山精密(002384) -14.16% |
+| source:ashare-trend-buy | asof | 10/10 | -2.81% | -5.88% | +40.00% | 工业富联(601138) +14.17% | 再升科技(603601) -19.82% |
 
 ## 按推荐日期
 
@@ -33,7 +33,7 @@
 | date:ashare-trend-buy/2026-05-27 | 5d | 0/10 |  |  |  |  |  |
 | date:ashare-trend-buy/2026-05-27 | 10d | 0/10 |  |  |  |  |  |
 | date:ashare-trend-buy/2026-05-27 | 20d | 0/10 |  |  |  |  |  |
-| date:ashare-trend-buy/2026-05-27 | asof | 10/10 | -4.62% | -4.22% | +30.00% | 工业富联(601138) +5.24% | 东山精密(002384) -14.16% |
+| date:ashare-trend-buy/2026-05-27 | asof | 10/10 | -2.81% | -5.88% | +40.00% | 工业富联(601138) +14.17% | 再升科技(603601) -19.82% |
 
 ## 按档位
 
@@ -43,10 +43,10 @@
 | grade:ashare-trend-buy/A | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/A | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/A | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/A | asof | 5/5 | -3.57% | -0.58% | +40.00% | 工业富联(601138) +5.24% | 东山精密(002384) -14.16% |
+| grade:ashare-trend-buy/A | asof | 5/5 | +1.59% | +2.53% | +60.00% | 工业富联(601138) +14.17% | 紫光国微(002049) -10.43% |
 | grade:ashare-trend-buy/B | 1d | 5/5 | +3.80% | +3.26% | +80.00% | 再升科技(603601) +10.00% | 东阳光(600673) -0.05% |
 | grade:ashare-trend-buy/B | 5d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/B | 10d | 0/5 |  |  |  |  |  |
 | grade:ashare-trend-buy/B | 20d | 0/5 |  |  |  |  |  |
-| grade:ashare-trend-buy/B | asof | 5/5 | -5.67% | -5.48% | +20.00% | 天孚通信(300394) +0.06% | 再升科技(603601) -10.89% |
+| grade:ashare-trend-buy/B | asof | 5/5 | -7.21% | -7.23% | +20.00% | 天孚通信(300394) +6.62% | 再升科技(603601) -19.82% |
 
