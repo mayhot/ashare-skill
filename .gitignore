@@ -5,6 +5,9 @@ runs/**/data/
 runs/**/scripts/
 runs/**/*.json
 runs/**/*.csv
+runs/**/*.sqlite
+runs/**/*.sqlite-shm
+runs/**/*.sqlite-wal
 runs/**/*.pyc
 
 __pycache__/

@@ -1,8 +1,18 @@
 # Changelog
 
+## 2026-06-04
+
+- skills: Updated `ashare-volume-doubled-uptrend` to exclude companies below 20bn yuan total market cap by default.
+- skills: Migrated the shared K-line cache from a single CSV file to SQLite with `(code,date)` upserts, bounded cache trimming, code-scoped reads, and one-time legacy CSV migration.
+- skills: Updated cache documentation and ignored SQLite cache artifacts under `runs/`.
+- notes: Validated with `--self-test` and `compileall`; existing `runs/` outputs were not committed.
+
 ## 2026-06-03
 
 - skills: Added `ashare-volume-doubled-uptrend` for full A-share screening of 6-month uptrends with recent doubled-volume up days and next-day half-gain hold confirmation.
+- skills: Updated `ashare-volume-doubled-uptrend` to keep a shared 6-month daily-K cache under its runs root and use daily incremental K-line refreshes after the initial full fetch.
+- skills: Made `ashare-volume-doubled-uptrend` cache refresh resumable with batch persistence and shorter per-request timeouts.
+- skills: Added failed-code reporting, short-listing-history cache completion, and BaoStock third-source K-line supplement to `ashare-volume-doubled-uptrend`.
 
 ## 2026-06-02
 

@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股放量守涨趋势筛选"
+  short_description: "筛选6个月上升趋势且近5日放量后守住涨幅的全A标的"
+  default_prompt: "使用 $ashare-volume-doubled-uptrend，先维护 runs/ashare-volume-doubled-uptrend/kline-cache/ 的近6个月全A日K缓存，再扫描近6个月上升趋势且近5日放量翻倍后次日守住半幅涨幅的研究观察池，并保存到 runs/ashare-volume-doubled-uptrend/YYYY-MM-DD/YYYY-MM-DD.md。"
