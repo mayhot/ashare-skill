@@ -1,0 +1,4 @@
+interface:
+  display_name: "A股指数调入筛选"
+  short_description: "筛选指数调入股与成交额、人气榜前100交集"
+  default_prompt: "使用 $ashare-index-inclusion-watch，核验本轮主流指数调入成分股（排除中证1000、中证2000），查询最近收盘成交额前100和人气榜前100，输出分别命中成交额、人气榜以及两者都命中的名单。"

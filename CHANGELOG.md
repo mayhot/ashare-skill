@@ -2,6 +2,11 @@
 
 ## 2026-06-04
 
+- runs: Added the 2026-06-03 `ashare-index-inclusion-watch`, `ashare-kline-sqlite-cache`, and `ashare-volume-doubled-uptrend` run artifacts.
+- skills: Added repository-wide agent guidelines in `AGENTS.md`.
+- skills: Added `ashare-index-inclusion-watch` for mainstream index inclusion cross-screening against turnover and popularity rankings.
+- skills: Added `ashare-kline-sqlite-cache` with a SQLite daily K-line and popularity snapshot sync script.
+- notes: Prepared changes for split commits on `runs` and `skill`; `main` was already ahead of `origin/main`.
 - skills: Updated `ashare-volume-doubled-uptrend` to exclude companies below 20bn yuan total market cap by default.
 - skills: Migrated the shared K-line cache from a single CSV file to SQLite with `(code,date)` upserts, bounded cache trimming, code-scoped reads, and one-time legacy CSV migration.
 - skills: Updated cache documentation and ignored SQLite cache artifacts under `runs/`.
