@@ -21,7 +21,25 @@ python ashare-trend-buy/scripts/run_trend_buy.py --date YYYY-MM-DD
 
 - `--top200 PATH`：复用用户提供、已核验的同日成交额前 200 CSV，作为“成交额前200”数据源。
 - `--runs-dir runs`：输出根目录。
+- `--workers 4`：K 线请求并发数；接口抖动或疑似限流时降到 `1` 或 `2`。
+- `--request-retries 4`：HTTP 重试次数，默认使用指数退避。
+- `--request-backoff 1.0`：重试基础等待秒数。
+- `--request-jitter 0.35`：重试和 K 线请求节奏中的随机抖动秒数，避免固定频率请求。
+- `--kline-request-delay 0.35`：每个 K 线 HTTP 请求前的基础等待秒数；接口不稳时可调到 `0.8` 或更高。
 - `--no-network`：禁用网络；仅在本地候选池和 K 线可用时使用。
+
+When public quote APIs become unstable or start disconnecting after an initially successful run, prefer a conservative retry profile before re-running the full workflow:
+
+```powershell
+python ashare-trend-buy/scripts/run_trend_buy.py `
+  --date YYYY-MM-DD `
+  --workers 2 `
+  --request-retries 5 `
+  --request-backoff 1.5 `
+  --request-jitter 0.8 `
+  --kline-request-delay 0.8
+```
+
 脚本必须保存：
 
 ```text

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-05
+
+- skills: Added repository-wide SQLite database ignore rules so cache databases and WAL/SHM sidecars stay out of commits.
+- skills: Optimized `ashare-kline-sqlite-cache` full-market K-line sync by making Tencent the default first K-line source, fetching only per-symbol missing date gaps after seed import, and reporting source counts plus average source latency in progress logs.
+- skills: Added `ashare-trend-buy` runtime progress output to stderr for candidate loading, K-line fetch progress, pool scoring, and report writing.
+
 ## 2026-06-04
 
 - runs: Added the 2026-06-03 `ashare-index-inclusion-watch`, `ashare-kline-sqlite-cache`, and `ashare-volume-doubled-uptrend` run artifacts.
@@ -10,6 +16,9 @@
 - skills: Updated `ashare-volume-doubled-uptrend` to exclude companies below 20bn yuan total market cap by default.
 - skills: Migrated the shared K-line cache from a single CSV file to SQLite with `(code,date)` upserts, bounded cache trimming, code-scoped reads, and one-time legacy CSV migration.
 - skills: Updated cache documentation and ignored SQLite cache artifacts under `runs/`.
+- skills: Hardened `ashare-kline-sqlite-cache` public endpoint calls with shared request pacing, configurable retry attempts, exponential backoff, and a lower default K-line fetch concurrency.
+- skills: Updated `ashare-kline-sqlite-cache` same-day guard to allow default runs from 15:30 through 23:59:59 Asia/Shanghai.
+- skills: Hardened `ashare-trend-buy` public API calls with configurable retries, exponential backoff, jittered K-line pacing, and a lower default K-line fetch concurrency.
 - notes: Validated with `--self-test` and `compileall`; existing `runs/` outputs were not committed.
 
 ## 2026-06-03

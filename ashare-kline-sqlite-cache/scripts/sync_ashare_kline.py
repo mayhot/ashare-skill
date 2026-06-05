@@ -1,7 +1,10 @@
 import argparse
+import csv
 import json
+import random
 import sqlite3
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -64,6 +67,10 @@ EASTMONEY_POPULARITY_URLS = [
     "http://emappdata.eastmoney.com/stockrank/getAllCurrentList",
 ]
 ADJUST_FLAGS = {"none": "0", "qfq": "1", "hfq": "2"}
+DEFAULT_KLINE_SOURCES = ["tencent", "eastmoney"]
+DEFAULT_POPULARITY_SOURCES = ["eastmoney", "akshare"]
+REQUEST_THROTTLE_LOCK = threading.Lock()
+NEXT_REQUEST_AT = 0.0
 
 
 def add_local_deps() -> None:
@@ -82,6 +89,84 @@ add_local_deps()
 
 def now_china() -> datetime:
     return datetime.now(CHINA_TZ)
+
+
+def log(message: str) -> None:
+    stamp = now_china().strftime("%H:%M:%S")
+    print(f"[{stamp}] {message}", flush=True)
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, sec = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h{minutes:02d}m{sec:02d}s"
+    if minutes:
+        return f"{minutes}m{sec:02d}s"
+    return f"{sec}s"
+
+
+def format_eta(done: int, total: int, elapsed: float) -> str:
+    if done <= 0 or total <= 0 or done >= total:
+        return "0s"
+    rate = done / max(elapsed, 0.001)
+    return format_duration((total - done) / rate)
+
+
+def format_count_map(counts: dict[str, int]) -> str:
+    visible = [f"{key}:{value}" for key, value in counts.items() if value]
+    return ",".join(visible) if visible else "none"
+
+
+def format_average_seconds(totals: dict[str, float], counts: dict[str, int]) -> str:
+    values = []
+    for key, total in totals.items():
+        count = counts.get(key, 0)
+        if count:
+            values.append(f"{key}:{total / count:.2f}s")
+    return ",".join(values) if values else "none"
+
+
+def parse_sources(value: str, default: list[str], allowed: set[str]) -> list[str]:
+    text = str(value or "auto").strip().lower()
+    if text == "auto":
+        return list(default)
+    sources = [item.strip().lower() for item in text.split(",") if item.strip()]
+    unknown = [item for item in sources if item not in allowed]
+    if unknown:
+        raise SystemExit(f"Unsupported source(s): {', '.join(unknown)}. Allowed: {', '.join(sorted(allowed))}, auto")
+    deduped: list[str] = []
+    for source in sources:
+        if source not in deduped:
+            deduped.append(source)
+    if not deduped:
+        raise SystemExit("At least one source must be selected.")
+    return deduped
+
+
+def throttle_public_request(request_delay: float, request_jitter: float) -> None:
+    global NEXT_REQUEST_AT
+    delay = max(0.0, float(request_delay or 0.0))
+    jitter = max(0.0, float(request_jitter or 0.0))
+    if delay <= 0 and jitter <= 0:
+        return
+    spacing = delay + (random.uniform(0, jitter) if jitter > 0 else 0.0)
+    with REQUEST_THROTTLE_LOCK:
+        now = time.monotonic()
+        target = max(now, NEXT_REQUEST_AT)
+        NEXT_REQUEST_AT = target + spacing
+    wait = target - now
+    if wait > 0:
+        time.sleep(wait)
+
+
+def retry_sleep_seconds(attempt: int, retry_base_sleep: float, retry_max_sleep: float) -> float:
+    base = max(0.0, float(retry_base_sleep or 0.0))
+    maximum = max(base, float(retry_max_sleep or base or 0.0))
+    delay = min(maximum, base * (2 ** attempt))
+    jitter = random.uniform(0, min(1.0, max(base, 0.0))) if base > 0 else 0.0
+    return delay + jitter
 
 
 def normalize_code(value: Any) -> str:
@@ -128,26 +213,45 @@ def to_float(value: Any) -> float | None:
         return None
 
 
-def request_json(url: str, timeout: int) -> dict[str, Any]:
+def request_json(
+    url: str,
+    timeout: int,
+    attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
+) -> dict[str, Any]:
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
         "Referer": "https://quote.eastmoney.com/",
     }
     last_error: Exception | None = None
-    for attempt in range(3):
+    total_attempts = max(1, int(attempts or 1))
+    for attempt in range(total_attempts):
         try:
+            throttle_public_request(request_delay, request_jitter)
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             last_error = exc
-            if attempt < 2:
-                time.sleep(0.5 + attempt)
+            if attempt < total_attempts - 1:
+                time.sleep(retry_sleep_seconds(attempt, retry_base_sleep, retry_max_sleep))
     raise last_error or RuntimeError("request failed")
 
 
-def post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
+def post_json(
+    url: str,
+    payload: dict[str, Any],
+    timeout: int,
+    attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
+) -> dict[str, Any]:
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json,text/plain,*/*",
@@ -156,15 +260,17 @@ def post_json(url: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]
     }
     data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     last_error: Exception | None = None
-    for attempt in range(3):
+    total_attempts = max(1, int(attempts or 1))
+    for attempt in range(total_attempts):
         try:
+            throttle_public_request(request_delay, request_jitter)
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             last_error = exc
-            if attempt < 2:
-                time.sleep(0.5 + attempt)
+            if attempt < total_attempts - 1:
+                time.sleep(retry_sleep_seconds(attempt, retry_base_sleep, retry_max_sleep))
     raise last_error or RuntimeError("request failed")
 
 
@@ -172,7 +278,19 @@ def fetch_stock_universe(
     limit: int | None,
     timeout: int,
     prefer_akshare: bool,
+    universe_source: str,
 ) -> tuple[list[dict[str, Any]], str]:
+    if universe_source in ("official", "auto"):
+        try:
+            rows = fetch_stock_universe_official(limit)
+            if rows:
+                return rows, "official_exchanges:akshare_wrapped"
+        except Exception as exc:
+            if universe_source == "official":
+                raise
+            print(f"official exchange universe unavailable, falling back to market sources: {exc}")
+    if universe_source == "seed":
+        raise RuntimeError("--universe-source seed requires --seed-kline-csv and is handled before online fetch")
     if prefer_akshare:
         try:
             rows = fetch_stock_universe_akshare(limit)
@@ -188,6 +306,134 @@ def fetch_stock_universe(
         print(f"Eastmoney universe unavailable, falling back to Sina: {exc}")
     rows = fetch_stock_universe_sina(limit, timeout)
     return rows, "sina.market_center"
+
+
+def fetch_stock_universe_official(limit: int | None) -> list[dict[str, Any]]:
+    import akshare as ak  # type: ignore
+
+    started = time.time()
+    log("official universe: fetching SSE/SZSE/BSE stock lists")
+    rows: list[dict[str, Any]] = []
+    errors: list[str] = []
+    source_counts = {"SSE": 0, "SZSE": 0, "BSE": 0}
+
+    for indicator, board in [("主板A股", "SSE Main Board"), ("科创板", "STAR Market")]:
+        try:
+            df = call_with_retries(lambda: ak.stock_info_sh_name_code(indicator), f"SSE {indicator}")
+            normalized = normalize_official_rows(df.to_dict("records"), "SH", board, "SSE")
+            rows.extend(normalized)
+            source_counts["SSE"] += len(normalized)
+            log(f"official universe: SSE {indicator} rows={len(normalized)} total_sse={source_counts['SSE']}")
+        except Exception as exc:
+            errors.append(f"SSE {indicator}: {exc}")
+
+    try:
+        df = call_with_retries(lambda: ak.stock_info_sz_name_code("A股列表"), "SZSE A股列表")
+        normalized = normalize_official_rows(df.to_dict("records"), "SZ", "", "SZSE")
+        rows.extend(normalized)
+        source_counts["SZSE"] += len(normalized)
+        log(f"official universe: SZSE A-share rows={len(normalized)}")
+    except Exception as exc:
+        errors.append(f"SZSE A股列表: {exc}")
+
+    try:
+        df = call_with_retries(ak.stock_info_bj_name_code, "BSE stock list")
+        normalized = normalize_official_rows(df.to_dict("records"), "BJ", "BSE", "BSE")
+        rows.extend(normalized)
+        source_counts["BSE"] += len(normalized)
+        log(f"official universe: BSE rows={len(normalized)}")
+    except Exception as exc:
+        errors.append(f"BSE stock list: {exc}")
+
+    deduped: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        code = row["code"]
+        if not is_a_share_code(code, row.get("exchange", "")):
+            continue
+        deduped[code] = row
+
+    result = sorted(deduped.values(), key=lambda item: item["code"])
+    if limit:
+        result = result[:limit]
+    missing_sources = [source for source, count in source_counts.items() if count <= 0]
+    if missing_sources:
+        raise RuntimeError(
+            "official exchange universe incomplete; "
+            f"missing={','.join(missing_sources)}; "
+            f"counts={source_counts}; errors={'; '.join(errors)}"
+        )
+    if not result:
+        raise RuntimeError("; ".join(errors) or "official exchange universe returned empty")
+    log(f"official universe: merged rows={len(result)} counts={source_counts} elapsed={format_duration(time.time() - started)}")
+    return result
+
+
+def call_with_retries(fn: Any, label: str, attempts: int = 3) -> Any:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            started = time.time()
+            log(f"{label}: fetch attempt {attempt + 1}/{attempts}")
+            result = fn()
+            log(f"{label}: fetch ok elapsed={format_duration(time.time() - started)}")
+            return result
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts - 1:
+                log(f"{label}: failed, retrying: {exc}")
+                time.sleep(1.0 + attempt * 2)
+    raise last_error or RuntimeError(f"{label} failed")
+
+
+def normalize_official_rows(records: list[dict[str, Any]], exchange: str, default_board: str, source: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in records:
+        code = normalize_code(
+            raw.get("代码")
+            or raw.get("公司代码")
+            or raw.get("A股代码")
+            or raw.get("证券代码")
+        )
+        if not code:
+            continue
+        name = (
+            raw.get("简称")
+            or raw.get("公司简称")
+            or raw.get("A股简称")
+            or raw.get("证券简称")
+            or ""
+        )
+        board = str(raw.get("板块") or default_board or "").strip()
+        rows.append(
+            {
+                "code": code,
+                "name": str(name).strip(),
+                "exchange": exchange,
+                "secid": secid_for_code(code),
+                "board": board,
+                "listing_date": str(
+                    raw.get("上市日期")
+                    or raw.get("A股上市日期")
+                    or ""
+                ).strip(),
+                "industry": str(raw.get("所属行业") or "").strip(),
+                "region": str(raw.get("地区") or raw.get("注册地") or "").strip(),
+                "official_source": source,
+                "raw_json": json.dumps(raw, ensure_ascii=False, default=str),
+            }
+        )
+    return rows
+
+
+def is_a_share_code(code: str, exchange: str) -> bool:
+    code = normalize_code(code)
+    if exchange == "SH":
+        return code.startswith(("600", "601", "603", "605", "688", "689"))
+    if exchange == "SZ":
+        return code.startswith(("000", "001", "002", "003", "300", "301"))
+    if exchange == "BJ":
+        return code.startswith(("4", "8", "920"))
+    return bool(code)
 
 
 def fetch_stock_universe_akshare(limit: int | None) -> list[dict[str, Any]]:
@@ -337,14 +583,53 @@ def fetch_kline_rows(
     end: str,
     adjust: str,
     timeout: int,
-) -> tuple[str, list[dict[str, Any]]]:
-    try:
-        code, rows = fetch_eastmoney_kline_rows(stock, begin, end, adjust, timeout)
-        if rows:
-            return code, rows
-    except Exception:
-        pass
-    return fetch_tencent_kline_rows(stock, begin, end, adjust, timeout)
+    sources: list[str],
+    request_attempts: int,
+    retry_base_sleep: float,
+    retry_max_sleep: float,
+    request_delay: float,
+    request_jitter: float,
+) -> tuple[str, list[dict[str, Any]], str, float]:
+    errors: list[str] = []
+    last_code = stock["code"]
+    for source in sources:
+        source_started = time.time()
+        try:
+            if source == "eastmoney":
+                code, rows = fetch_eastmoney_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                    timeout,
+                    request_attempts,
+                    retry_base_sleep,
+                    retry_max_sleep,
+                    request_delay,
+                    request_jitter,
+                )
+            elif source == "tencent":
+                code, rows = fetch_tencent_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                    timeout,
+                    request_attempts,
+                    retry_base_sleep,
+                    retry_max_sleep,
+                    request_delay,
+                    request_jitter,
+                )
+            else:
+                raise RuntimeError(f"unsupported kline source: {source}")
+            last_code = code
+            if rows:
+                return code, rows, source, time.time() - source_started
+            errors.append(f"{source}: empty")
+        except Exception as exc:
+            errors.append(f"{source}: {exc}")
+    raise RuntimeError("; ".join(errors) or "all kline sources failed")
 
 
 def fetch_eastmoney_kline_rows(
@@ -353,6 +638,11 @@ def fetch_eastmoney_kline_rows(
     end: str,
     adjust: str,
     timeout: int,
+    request_attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     code = stock["code"]
     url = EASTMONEY_KLINE_URL.format(
@@ -361,7 +651,15 @@ def fetch_eastmoney_kline_rows(
         end=end,
         fqt=ADJUST_FLAGS[adjust],
     )
-    payload = request_json(url, timeout)
+    payload = request_json(
+        url,
+        timeout,
+        request_attempts,
+        retry_base_sleep,
+        retry_max_sleep,
+        request_delay,
+        request_jitter,
+    )
     data = payload.get("data") or {}
     klines = data.get("klines") or []
     rows: list[dict[str, Any]] = []
@@ -399,6 +697,11 @@ def fetch_tencent_kline_rows(
     end: str,
     adjust: str,
     timeout: int,
+    request_attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
 ) -> tuple[str, list[dict[str, Any]]]:
     code = stock["code"]
     symbol = qq_symbol_for_code(code)
@@ -413,7 +716,15 @@ def fetch_tencent_kline_rows(
     for candidate in candidates:
         adjust_part = "" if candidate == "none" else f",{candidate}"
         param = urllib.parse.quote(f"{symbol},day,,,{datalen}{adjust_part}", safe="")
-        payload = request_json(TENCENT_KLINE_URL.format(param=param), timeout)
+        payload = request_json(
+            TENCENT_KLINE_URL.format(param=param),
+            timeout,
+            request_attempts,
+            retry_base_sleep,
+            retry_max_sleep,
+            request_delay,
+            request_jitter,
+        )
         stock_data = ((payload.get("data") or {}).get(symbol) or {})
         key = f"{candidate}day" if candidate != "none" else "day"
         klines = stock_data.get(key) or stock_data.get("day") or []
@@ -451,21 +762,52 @@ def fetch_tencent_kline_rows(
     return code, rows
 
 
+def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, column_type in columns.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {column_type}")
+    conn.commit()
+
+
 def fetch_popularity_top100(
     trade_date: str,
     timeout: int,
     limit: int,
-    prefer_akshare: bool,
+    sources: list[str],
+    request_attempts: int,
+    retry_base_sleep: float,
+    retry_max_sleep: float,
+    request_delay: float,
+    request_jitter: float,
 ) -> tuple[list[dict[str, Any]], str]:
-    if prefer_akshare:
+    errors: list[str] = []
+    for source in sources:
         try:
-            rows = fetch_popularity_top100_akshare(trade_date, limit)
+            if source == "akshare":
+                rows = fetch_popularity_top100_akshare(trade_date, limit)
+                source_name = "akshare.stock_hot_rank_em"
+            elif source == "eastmoney":
+                rows = fetch_popularity_top100_eastmoney(
+                    trade_date,
+                    timeout,
+                    limit,
+                    request_attempts,
+                    retry_base_sleep,
+                    retry_max_sleep,
+                    request_delay,
+                    request_jitter,
+                )
+                source_name = "eastmoney.stockrank.getAllCurrentList"
+            else:
+                raise RuntimeError(f"unsupported popularity source: {source}")
             if rows:
-                return rows, "akshare.stock_hot_rank_em"
+                return rows, source_name
+            errors.append(f"{source}: empty")
         except Exception as exc:
-            print(f"akshare popularity unavailable, falling back to Eastmoney app rank: {exc}")
-    rows = fetch_popularity_top100_eastmoney(trade_date, timeout, limit)
-    return rows, "eastmoney.stockrank.getAllCurrentList"
+            errors.append(f"{source}: {exc}")
+            log(f"popularity source failed: {source}: {exc}")
+    raise RuntimeError("; ".join(errors) or "all popularity sources failed")
 
 
 def fetch_popularity_top100_akshare(trade_date: str, limit: int) -> list[dict[str, Any]]:
@@ -515,6 +857,11 @@ def fetch_popularity_top100_eastmoney(
     trade_date: str,
     timeout: int,
     limit: int,
+    request_attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
 ) -> list[dict[str, Any]]:
     payload = {
         "appId": "appId01",
@@ -526,7 +873,16 @@ def fetch_popularity_top100_eastmoney(
     last_error: Exception | None = None
     for url in EASTMONEY_POPULARITY_URLS:
         try:
-            response = post_json(url, payload, timeout)
+            response = post_json(
+                url,
+                payload,
+                timeout,
+                request_attempts,
+                retry_base_sleep,
+                retry_max_sleep,
+                request_delay,
+                request_jitter,
+            )
             items = extract_popularity_items(response)
             rows = normalize_popularity_items(items, trade_date, limit, "eastmoney.stockrank.getAllCurrentList")
             if rows:
@@ -638,6 +994,11 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             name TEXT,
             exchange TEXT,
             secid TEXT,
+            board TEXT,
+            listing_date TEXT,
+            industry TEXT,
+            region TEXT,
+            official_source TEXT,
             latest_price REAL,
             pct_chg REAL,
             change_amount REAL,
@@ -662,6 +1023,17 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )
         """
+    )
+    ensure_columns(
+        conn,
+        "stock_universe",
+        {
+            "board": "TEXT",
+            "listing_date": "TEXT",
+            "industry": "TEXT",
+            "region": "TEXT",
+            "official_source": "TEXT",
+        },
     )
     conn.execute(
         """
@@ -806,6 +1178,11 @@ def upsert_stock_universe(conn: sqlite3.Connection, rows: list[dict[str, Any]]) 
         "name",
         "exchange",
         "secid",
+        "board",
+        "listing_date",
+        "industry",
+        "region",
+        "official_source",
         "latest_price",
         "pct_chg",
         "change_amount",
@@ -845,6 +1222,18 @@ def upsert_stock_universe(conn: sqlite3.Connection, rows: list[dict[str, Any]]) 
     conn.commit()
 
 
+def prune_stock_universe_to_codes(conn: sqlite3.Connection, codes: set[str]) -> int:
+    if not codes:
+        return 0
+    placeholders = ",".join("?" for _ in codes)
+    cur = conn.execute(
+        f"DELETE FROM stock_universe WHERE code NOT IN ({placeholders})",
+        tuple(codes),
+    )
+    conn.commit()
+    return int(cur.rowcount or 0)
+
+
 def upsert_kline_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
     if not rows:
         return 0
@@ -880,6 +1269,201 @@ def upsert_kline_rows(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> i
     )
     conn.commit()
     return len(rows)
+
+
+def load_seed_kline_csv(
+    conn: sqlite3.Connection,
+    csv_path: Path,
+    begin: str,
+    end: str,
+    wanted_codes: set[str] | None,
+    batch_rows: int,
+) -> int:
+    if not csv_path.exists():
+        raise FileNotFoundError(csv_path)
+    started = time.time()
+    file_size = csv_path.stat().st_size
+    log(f"seed csv: start path={csv_path} size={file_size / 1024 / 1024:.1f}MB")
+    begin_date = f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+    end_date = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    imported = 0
+    scanned = 0
+    matched = 0
+    last_log = started
+    pending: list[dict[str, Any]] = []
+    fetched_at = now_china().strftime("%Y-%m-%d %H:%M:%S%z")
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for raw in reader:
+            scanned += 1
+            code = normalize_code(raw.get("code"))
+            if not code or (wanted_codes is not None and code not in wanted_codes):
+                continue
+            trade_date = str(raw.get("date") or raw.get("trade_date") or "").strip()
+            if not trade_date or trade_date < begin_date or trade_date > end_date:
+                continue
+            matched += 1
+            pending.append(
+                {
+                    "code": code,
+                    "trade_date": trade_date,
+                    "name": str(raw.get("name") or "").strip() or code,
+                    "exchange": exchange_for_code(code),
+                    "open": to_float(raw.get("open")),
+                    "close": to_float(raw.get("close")),
+                    "high": to_float(raw.get("high")),
+                    "low": to_float(raw.get("low")),
+                    "volume": to_float(raw.get("volume")),
+                    "amount": to_float(raw.get("amount")),
+                    "amplitude": to_float(raw.get("amplitude")),
+                    "pct_chg": to_float(raw.get("pct_chg") or raw.get("pctChg")),
+                    "change_amount": to_float(raw.get("change_amount")),
+                    "turnover": to_float(raw.get("turnover")),
+                    "source": f"seed_csv:{csv_path.name}",
+                    "fetched_at": fetched_at,
+                    "raw_line": json.dumps(raw, ensure_ascii=False),
+                }
+            )
+            if len(pending) >= batch_rows:
+                imported += upsert_kline_rows(conn, pending)
+                pending = []
+            current = time.time()
+            if scanned % 100_000 == 0 or current - last_log >= 15:
+                last_log = current
+                log(
+                    "seed csv: "
+                    f"scanned={scanned:,} matched={matched:,} imported={imported + len(pending):,} "
+                    f"elapsed={format_duration(current - started)}"
+                )
+    imported += upsert_kline_rows(conn, pending)
+    log(
+        "seed csv: done "
+        f"scanned={scanned:,} matched={matched:,} imported={imported:,} "
+        f"elapsed={format_duration(time.time() - started)}"
+    )
+    return imported
+
+
+def kline_status_by_code(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT code, COUNT(*) AS row_count, MAX(trade_date) AS latest_date
+        FROM daily_kline
+        GROUP BY code
+        """
+    ).fetchall()
+    return {
+        str(row[0]): {"row_count": int(row[1] or 0), "latest_date": str(row[2] or "")}
+        for row in rows
+    }
+
+
+def load_cached_official_universe(conn: sqlite3.Connection, limit: int | None) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+            code, name, exchange, secid, board, listing_date,
+            industry, region, official_source, raw_json
+        FROM stock_universe
+        WHERE official_source IN ('SSE', 'SZSE', 'BSE')
+        ORDER BY code
+        """
+    ).fetchall()
+    result = [
+        {
+            "code": row[0],
+            "name": row[1],
+            "exchange": row[2],
+            "secid": row[3] or secid_for_code(row[0]),
+            "board": row[4],
+            "listing_date": row[5],
+            "industry": row[6],
+            "region": row[7],
+            "official_source": row[8],
+            "raw_json": row[9] or "{}",
+        }
+        for row in rows
+    ]
+    return result[:limit] if limit else result
+
+
+def cached_official_universe_counts(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = conn.execute(
+        """
+        SELECT official_source, COUNT(*)
+        FROM stock_universe
+        WHERE official_source IN ('SSE', 'SZSE', 'BSE')
+        GROUP BY official_source
+        """
+    ).fetchall()
+    counts = {"SSE": 0, "SZSE": 0, "BSE": 0}
+    for source, count in rows:
+        counts[str(source)] = int(count or 0)
+    return counts
+
+
+def has_complete_cached_official_universe(conn: sqlite3.Connection) -> bool:
+    counts = cached_official_universe_counts(conn)
+    return all(counts[source] > 0 for source in ("SSE", "SZSE", "BSE"))
+
+
+def should_refresh_official_universe(conn: sqlite3.Connection, args: argparse.Namespace) -> bool:
+    if args.refresh_universe:
+        return True
+    if not has_complete_cached_official_universe(conn):
+        return True
+    trade_day = datetime.strptime(args.trade_date, "%Y-%m-%d").date()
+    return trade_day.day == args.official_universe_refresh_day
+
+
+def yyyymmdd_days_before(trade_date: str, days: int) -> str:
+    end_dt = datetime.strptime(trade_date, "%Y-%m-%d").date()
+    return (end_dt - timedelta(days=days)).strftime("%Y%m%d")
+
+
+def yyyymmdd_day_after(trade_date: str) -> str:
+    parsed = datetime.strptime(trade_date, "%Y-%m-%d").date()
+    return (parsed + timedelta(days=1)).strftime("%Y%m%d")
+
+
+def build_fetch_jobs(
+    conn: sqlite3.Connection,
+    stocks: list[dict[str, Any]],
+    begin: str,
+    end: str,
+    args: argparse.Namespace,
+    seed_rows_imported: int,
+) -> list[tuple[dict[str, Any], str, str]]:
+    if seed_rows_imported <= 0:
+        log(f"fetch plan: no seed rows, scheduling full window for {len(stocks)} symbols")
+        return [(stock, begin, end) for stock in stocks]
+
+    status = kline_status_by_code(conn)
+    jobs: list[tuple[dict[str, Any], str, str]] = []
+    skipped_current = 0
+    gap_jobs = 0
+    full_jobs = 0
+    for stock in stocks:
+        code = stock["code"]
+        item = status.get(code, {})
+        row_count = int(item.get("row_count") or 0)
+        latest_date = str(item.get("latest_date") or "")
+        if row_count > 0 and latest_date >= args.trade_date:
+            skipped_current += 1
+            continue
+        if row_count > 0 and latest_date:
+            job_begin = max(begin, yyyymmdd_day_after(latest_date))
+            gap_jobs += 1
+        else:
+            job_begin = begin
+            full_jobs += 1
+        jobs.append((stock, job_begin, end))
+    log(
+        "fetch plan: "
+        f"total={len(stocks)} skipped_current={skipped_current} "
+        f"gap_fill={gap_jobs} full={full_jobs}"
+    )
+    return jobs
 
 
 def replace_popularity_top100(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
@@ -1001,6 +1585,30 @@ def stock_rows_from_symbols(symbols: str) -> list[dict[str, Any]]:
     return rows
 
 
+def stock_rows_from_seed_csv(csv_path: Path, limit: int | None) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for raw in reader:
+            code = normalize_code(raw.get("code"))
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            rows.append(
+                {
+                    "code": code,
+                    "name": str(raw.get("name") or "").strip() or code,
+                    "exchange": exchange_for_code(code),
+                    "secid": secid_for_code(code),
+                    "raw_json": "{}",
+                }
+            )
+            if limit and len(rows) >= limit:
+                break
+    return rows
+
+
 def date_window(trade_date: str, mode: str, args: argparse.Namespace) -> tuple[str, str]:
     end_dt = datetime.strptime(trade_date, "%Y-%m-%d").date()
     days = args.initial_lookback_days if mode == "init" else args.incremental_lookback_days
@@ -1009,18 +1617,36 @@ def date_window(trade_date: str, mode: str, args: argparse.Namespace) -> tuple[s
     return begin, end
 
 
+def parse_hhmm(value: str) -> tuple[int, int]:
+    text = str(value or "").strip()
+    try:
+        parsed = datetime.strptime(text, "%H:%M")
+    except ValueError as exc:
+        raise SystemExit(f"Invalid --min-run-time {text!r}; expected HH:MM such as 15:30.") from exc
+    return parsed.hour, parsed.minute
+
+
+def same_day_min_run_time(args: argparse.Namespace) -> tuple[int, int]:
+    if getattr(args, "min_run_hour", None) is not None and args.min_run_time == "15:30":
+        return int(args.min_run_hour), 0
+    return parse_hhmm(args.min_run_time)
+
+
 def enforce_time_guard(args: argparse.Namespace) -> None:
     if args.allow_before_close:
         return
     current = now_china()
-    if args.trade_date == current.date().isoformat() and current.hour < args.min_run_hour:
+    min_hour, min_minute = same_day_min_run_time(args)
+    min_time = current.replace(hour=min_hour, minute=min_minute, second=0, microsecond=0)
+    if args.trade_date == current.date().isoformat() and current < min_time:
         raise SystemExit(
-            f"Refusing same-day sync before {args.min_run_hour}:00 Asia/Shanghai. "
-            "Run after the close or pass --allow-before-close for explicit testing."
+            f"Refusing same-day sync before {min_hour:02d}:{min_minute:02d} Asia/Shanghai. "
+            "Run during the allowed same-day window or pass --allow-before-close for explicit testing."
         )
 
 
 def sync(args: argparse.Namespace) -> dict[str, Any]:
+    run_started = time.time()
     enforce_time_guard(args)
     db_path = Path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1031,85 +1657,187 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         run_id = start_run(conn, args)
         begin, end = date_window(args.trade_date, actual_mode, args)
 
-        print(f"database: {db_path}")
-        print(f"mode: {actual_mode}; window: {begin}-{end}; adjust: {args.adjust}")
-        if args.symbols_only:
+        log(f"run: database={db_path}")
+        log(f"run: mode={actual_mode} window={begin}-{end} adjust={args.adjust} trade_date={args.trade_date}")
+        if args.seed_universe_only or args.universe_source == "seed":
+            if not args.seed_kline_csv:
+                raise SystemExit("--seed-universe-only/--universe-source seed requires --seed-kline-csv")
+            stocks = stock_rows_from_seed_csv(Path(args.seed_kline_csv), args.limit)
+            universe_source = "seed_csv_universe"
+        elif args.symbols_only:
             if not args.symbols:
                 raise SystemExit("--symbols-only requires --symbols")
             stocks = stock_rows_from_symbols(args.symbols)
             universe_source = "symbols_only"
+        elif args.universe_source == "official" and not should_refresh_official_universe(conn, args):
+            stocks = load_cached_official_universe(conn, args.limit)
+            counts = cached_official_universe_counts(conn)
+            universe_source = f"cached_official_universe:{counts}"
+            log(f"official universe: using cached monthly universe counts={counts}")
         else:
             try:
-                stocks, universe_source = fetch_stock_universe(args.limit, args.request_timeout, args.prefer_akshare)
+                stocks, universe_source = fetch_stock_universe(
+                    args.limit,
+                    args.request_timeout,
+                    args.prefer_akshare,
+                    args.universe_source,
+                )
             except Exception as exc:
-                if not args.symbols:
+                if args.universe_source == "official":
                     raise
-                stocks = stock_rows_from_symbols(args.symbols)
-                universe_source = f"symbols_fallback:{exc}"
+                if args.seed_kline_csv:
+                    stocks = stock_rows_from_seed_csv(Path(args.seed_kline_csv), args.limit)
+                    universe_source = f"seed_csv_universe_fallback:{exc}"
+                elif not args.symbols:
+                    raise
+                else:
+                    stocks = stock_rows_from_symbols(args.symbols)
+                    universe_source = f"symbols_fallback:{exc}"
         if args.symbols:
             wanted = {normalize_code(code) for code in args.symbols.split(",") if normalize_code(code)}
             stocks = [row for row in stocks if row["code"] in wanted]
         if not stocks:
             raise SystemExit("No A-share symbols found from the selected universe source.")
         upsert_stock_universe(conn, stocks)
-        print(f"stock_count: {len(stocks)} ({universe_source})")
+        universe_pruned = 0
+        if actual_mode == "init" and (
+            universe_source.startswith("official_exchanges")
+            or universe_source.startswith("cached_official_universe")
+        ):
+            universe_pruned = prune_stock_universe_to_codes(conn, {row["code"] for row in stocks})
+        log(f"universe: stock_count={len(stocks)} source={universe_source}")
+        if universe_pruned:
+            log(f"universe: pruned_stale_rows={universe_pruned}")
+        wanted_codes = {row["code"] for row in stocks}
+
+        seed_rows_imported = 0
+        if args.seed_kline_csv:
+            seed_path = Path(args.seed_kline_csv)
+            seed_rows_imported = load_seed_kline_csv(
+                conn,
+                seed_path,
+                begin,
+                end,
+                wanted_codes,
+                args.batch_rows,
+            )
+            log(f"seed csv: imported_rows={seed_rows_imported:,}")
 
         popularity_count = 0
         popularity_source = "skipped"
         popularity_error = ""
         if not args.skip_popularity:
             try:
+                popularity_sources = parse_sources(
+                    args.popularity_sources,
+                    DEFAULT_POPULARITY_SOURCES,
+                    {"eastmoney", "akshare"},
+                )
+                log(f"popularity sources: order={','.join(popularity_sources)}")
                 popularity_rows, popularity_source = fetch_popularity_top100(
                     args.trade_date,
                     args.request_timeout,
                     args.popularity_limit,
-                    args.prefer_akshare,
+                    popularity_sources,
+                    args.request_attempts,
+                    args.retry_base_sleep,
+                    args.retry_max_sleep,
+                    args.request_delay,
+                    args.request_jitter,
                 )
                 popularity_count = replace_popularity_top100(conn, args.trade_date, popularity_rows)
-                print(f"popularity_count: {popularity_count} ({popularity_source})")
+                log(f"popularity: rows={popularity_count} source={popularity_source}")
             except Exception as exc:
                 popularity_error = str(exc)
                 replace_popularity_top100(conn, args.trade_date, [])
-                print(f"popularity unavailable: {popularity_error}")
+                log(f"popularity: unavailable error={popularity_error}")
 
         rows_upserted = 0
         failures: list[tuple[str, str, str]] = []
         pending: list[dict[str, Any]] = []
         completed = 0
         started = time.time()
+        kline_sources = parse_sources(args.kline_sources, DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent"})
+        log(f"kline sources: order={','.join(kline_sources)}")
+        log(
+            "network policy: "
+            f"workers={args.max_workers} attempts={args.request_attempts} "
+            f"retry_base={args.retry_base_sleep}s retry_max={args.retry_max_sleep}s "
+            f"request_delay={args.request_delay}s request_jitter={args.request_jitter}s"
+        )
+        fetch_jobs = build_fetch_jobs(conn, stocks, begin, end, args, seed_rows_imported)
+        log(f"network kline: scheduled_symbols={len(fetch_jobs)} workers={args.max_workers}")
+        success_symbols = 0
+        empty_symbols = 0
+        error_symbols = 0
+        source_counts: dict[str, int] = {source: 0 for source in kline_sources}
+        source_elapsed: dict[str, float] = {source: 0.0 for source in kline_sources}
+        fallback_symbols = 0
+        last_progress = started
+        last_error = ""
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
             futures = {
                 executor.submit(
                     fetch_kline_rows,
                     stock,
-                    begin,
-                    end,
+                    job_begin,
+                    job_end,
                     args.adjust,
                     args.request_timeout,
+                    kline_sources,
+                    args.request_attempts,
+                    args.retry_base_sleep,
+                    args.retry_max_sleep,
+                    args.request_delay,
+                    args.request_jitter,
                 ): stock
-                for stock in stocks
+                for stock, job_begin, job_end in fetch_jobs
             }
             for future in as_completed(futures):
                 stock = futures[future]
                 completed += 1
                 try:
-                    _code, rows = future.result()
+                    _code, rows, source, source_seconds = future.result()
                     if rows:
                         pending.extend(rows)
+                        success_symbols += 1
+                        source_counts[source] = source_counts.get(source, 0) + 1
+                        source_elapsed[source] = source_elapsed.get(source, 0.0) + source_seconds
+                        if kline_sources and source != kline_sources[0]:
+                            fallback_symbols += 1
                     else:
+                        empty_symbols += 1
                         failures.append((stock["code"], stock.get("name") or "", "empty kline response"))
                 except Exception as exc:
+                    error_symbols += 1
+                    last_error = str(exc)
                     failures.append((stock["code"], stock.get("name") or "", str(exc)))
                 if len(pending) >= args.batch_rows:
                     rows_upserted += upsert_kline_rows(conn, pending)
                     pending = []
-                if completed == len(stocks) or completed % args.progress_every == 0:
-                    elapsed = time.time() - started
-                    print(
-                        f"progress: {completed}/{len(stocks)} symbols, "
-                        f"rows_upserted={rows_upserted + len(pending)}, "
-                        f"failures={len(failures)}, elapsed={elapsed:.1f}s"
+                current = time.time()
+                should_log = (
+                    completed == len(fetch_jobs)
+                    or completed % args.progress_every == 0
+                    or current - last_progress >= args.progress_seconds
+                )
+                if should_log:
+                    last_progress = current
+                    elapsed = current - started
+                    rate = completed / max(elapsed, 0.001)
+                    message = (
+                        "network kline: "
+                        f"{completed}/{len(fetch_jobs)} "
+                        f"ok={success_symbols} empty={empty_symbols} errors={error_symbols} "
+                        f"sources={format_count_map(source_counts)} fallback={fallback_symbols} "
+                        f"rows_pending_or_saved={rows_upserted + len(pending):,} "
+                        f"rate={rate:.2f}/s eta={format_eta(completed, len(fetch_jobs), elapsed)} "
+                        f"elapsed={format_duration(elapsed)} "
+                        f"avg_source_latency={format_average_seconds(source_elapsed, source_counts)}"
                     )
+                    if last_error:
+                        message += f" last_error={last_error[:120]}"
+                    log(message)
         rows_upserted += upsert_kline_rows(conn, pending)
         add_failures(conn, run_id, failures)
         cutoff, retention_applied = apply_kline_retention(conn, actual_mode, args.retain_trading_days)
@@ -1118,8 +1846,18 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         notes = (
             f"retained_distinct_trade_days={trade_days}; "
             f"retention_applied={retention_applied}; "
+            f"stock_universe_pruned={universe_pruned}; "
+            f"seed_rows_imported={seed_rows_imported}; "
             f"popularity_count={popularity_count}; "
-            f"popularity_source={popularity_source}"
+            f"popularity_source={popularity_source}; "
+            f"max_workers={args.max_workers}; "
+            f"request_attempts={args.request_attempts}; "
+            f"retry_base_sleep={args.retry_base_sleep}; "
+            f"retry_max_sleep={args.retry_max_sleep}; "
+            f"request_delay={args.request_delay}; "
+            f"request_jitter={args.request_jitter}; "
+            f"kline_source_counts={format_count_map(source_counts)}; "
+            f"kline_fallback_symbols={fallback_symbols}"
         )
         if popularity_error:
             notes += f"; popularity_error={popularity_error}"
@@ -1134,13 +1872,28 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             latest_dates=latest_dates,
             notes=notes,
         )
+        log(
+            "run: done "
+            f"elapsed={format_duration(time.time() - run_started)} "
+            f"rows_upserted={rows_upserted:,} failures={len(failures)} "
+            f"retained_trade_days={trade_days}"
+        )
         return {
             "database": str(db_path),
             "run_id": run_id,
             "mode": actual_mode,
             "stock_count": len(stocks),
+            "stock_universe_pruned": universe_pruned,
             "rows_upserted": rows_upserted,
+            "seed_rows_imported": seed_rows_imported,
+            "network_fetch_symbols": len(fetch_jobs),
             "failures": len(failures),
+            "max_workers": args.max_workers,
+            "request_attempts": args.request_attempts,
+            "request_delay": args.request_delay,
+            "request_jitter": args.request_jitter,
+            "kline_source_counts": source_counts,
+            "kline_fallback_symbols": fallback_symbols,
             "popularity_count": popularity_count,
             "popularity_source": popularity_source,
             "popularity_error": popularity_error,
@@ -1166,6 +1919,20 @@ def self_test() -> None:
                 }
             ]
             upsert_stock_universe(conn, stocks)
+            upsert_stock_universe(
+                conn,
+                [
+                    {
+                        "code": "999999",
+                        "name": "stale",
+                        "exchange": "SH",
+                        "secid": "1.999999",
+                        "raw_json": "{}",
+                    }
+                ],
+            )
+            assert prune_stock_universe_to_codes(conn, {"000001"}) == 1
+            assert conn.execute("SELECT COUNT(*) FROM stock_universe WHERE code='999999'").fetchone()[0] == 0
             start = date(2025, 1, 1)
             rows = []
             for idx in range(130):
@@ -1222,6 +1989,56 @@ def self_test() -> None:
             assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 1
             assert replace_popularity_top100(conn, "2026-06-04", []) == 0
             assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 0
+            seed_path = Path(tmp) / "seed.csv"
+            seed_path.write_text(
+                "code,date,open,close,high,low,volume,amount,name\n"
+                "000002,2026-06-03,1,2,3,1,100,200,sample2\n",
+                encoding="utf-8",
+            )
+            assert load_seed_kline_csv(conn, seed_path, "20260601", "20260604", {"000002"}, 100) == 1
+            assert upsert_kline_rows(
+                conn,
+                [
+                    {
+                        "code": "000001",
+                        "trade_date": "2026-06-04",
+                        "name": "sample",
+                        "exchange": "SZ",
+                        "open": 10,
+                        "close": 10,
+                        "high": 10,
+                        "low": 10,
+                        "volume": 100,
+                        "amount": 1000,
+                        "amplitude": None,
+                        "pct_chg": None,
+                        "change_amount": None,
+                        "turnover": None,
+                        "source": "self-test-current",
+                        "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                        "raw_line": "",
+                    }
+                ],
+            ) == 1
+            jobs = build_fetch_jobs(
+                conn,
+                [{"code": "000001"}, {"code": "000002"}, {"code": "000003"}],
+                "20250101",
+                "20260604",
+                argparse.Namespace(
+                    trade_date="2026-06-04",
+                    incremental_lookback_days=12,
+                    retain_trading_days=126,
+                ),
+                seed_rows_imported=1,
+            )
+            job_by_code = {stock["code"]: job_begin for stock, job_begin, _job_end in jobs}
+            assert "000001" not in job_by_code
+            assert job_by_code["000002"] == "20260604"
+            assert job_by_code["000003"] == "20250101"
+            assert parse_hhmm("15:30") == (15, 30)
+            assert same_day_min_run_time(argparse.Namespace(min_run_time="15:30", min_run_hour=None)) == (15, 30)
+            assert same_day_min_run_time(argparse.Namespace(min_run_time="15:30", min_run_hour=17)) == (17, 0)
     print("self-test passed")
 
 
@@ -1233,21 +2050,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", default=now_china().date().isoformat())
     parser.add_argument("--mode", choices=["auto", "init", "daily"], default="auto")
     parser.add_argument("--adjust", choices=sorted(ADJUST_FLAGS), default="none")
+    parser.add_argument("--kline-sources", default="auto", help="comma-separated K-line source order: auto, tencent,eastmoney")
     parser.add_argument("--retain-trading-days", type=int, default=126)
     parser.add_argument("--initial-lookback-days", type=int, default=240)
     parser.add_argument("--incremental-lookback-days", type=int, default=12)
-    parser.add_argument("--min-run-hour", type=int, default=17)
+    parser.add_argument("--min-run-time", default="15:30", help="earliest same-day run time in Asia/Shanghai, HH:MM")
+    parser.add_argument("--min-run-hour", type=int, help="deprecated compatibility option; use --min-run-time")
     parser.add_argument("--allow-before-close", action="store_true")
     parser.add_argument("--request-timeout", type=int, default=15)
+    parser.add_argument("--request-attempts", type=int, default=4, help="HTTP attempts per public endpoint request")
+    parser.add_argument("--retry-base-sleep", type=float, default=0.8, help="base seconds for exponential retry backoff")
+    parser.add_argument("--retry-max-sleep", type=float, default=10.0, help="maximum seconds for exponential retry backoff")
+    parser.add_argument("--request-delay", type=float, default=0.12, help="minimum shared delay between public endpoint requests")
+    parser.add_argument("--request-jitter", type=float, default=0.18, help="extra random shared delay between public endpoint requests")
     parser.add_argument("--prefer-akshare", action="store_true", help="try akshare.stock_zh_a_spot_em before built-in endpoints")
+    parser.add_argument(
+        "--universe-source",
+        choices=["official", "auto", "market", "seed"],
+        default="official",
+        help="stock universe source; official uses SSE/SZSE/BSE official lists via AkShare wrappers",
+    )
+    parser.add_argument("--refresh-universe", action="store_true", help="force refresh official stock universe even outside the monthly refresh day")
+    parser.add_argument("--official-universe-refresh-day", type=int, default=1, help="day of month to refresh official SSE/SZSE/BSE universe")
     parser.add_argument("--skip-popularity", action="store_true", help="skip current-day popularity top 100 sync")
     parser.add_argument("--popularity-limit", type=int, default=100, help="number of popularity rows to keep for the current trade date")
-    parser.add_argument("--max-workers", type=int, default=8)
+    parser.add_argument("--popularity-sources", default="auto", help="comma-separated popularity source order: auto, eastmoney,akshare")
+    parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--batch-rows", type=int, default=5000)
     parser.add_argument("--progress-every", type=int, default=200)
+    parser.add_argument("--progress-seconds", type=int, default=15, help="print network progress at least this often")
     parser.add_argument("--limit", type=int, help="limit symbols for development runs")
     parser.add_argument("--symbols", help="comma-separated 6-digit stock codes")
     parser.add_argument("--symbols-only", action="store_true", help="use --symbols directly and skip full-market universe fetch")
+    parser.add_argument("--seed-kline-csv", help="load existing kline CSV before fetching missing rows from the network")
+    parser.add_argument("--seed-universe-only", action="store_true", help="derive the stock universe from --seed-kline-csv and skip online universe fetch")
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 

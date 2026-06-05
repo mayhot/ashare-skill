@@ -2,6 +2,8 @@ import csv
 import argparse
 import json
 import math
+import random
+import sys
 import time
 import urllib.parse
 import urllib.request
@@ -22,6 +24,10 @@ KLINE_SOURCE_LABEL = "东方财富日K接口"
 KLINE_BACKEND = "eastmoney"
 TURNOVER_TOP_N = 200
 HOT_TOP_N = 100
+REQUEST_RETRIES = 4
+REQUEST_BACKOFF = 1.0
+REQUEST_JITTER = 0.35
+KLINE_REQUEST_DELAY = 0.35
 
 
 KLINE_URL = (
@@ -158,26 +164,44 @@ FRONT_ROW_AMOUNT_YI = 50
 FRONT_ROW_RANK = 80
 
 
+def retry_delay(attempt: int) -> float:
+    base = max(0.0, REQUEST_BACKOFF) * (2 ** attempt)
+    jitter = random.uniform(0.0, max(0.0, REQUEST_JITTER))
+    return base + jitter
+
+
+def sleep_before_kline_request() -> None:
+    delay = max(0.0, KLINE_REQUEST_DELAY)
+    if delay:
+        time.sleep(delay + random.uniform(0.0, max(0.0, REQUEST_JITTER)))
+
+
+def progress(message: str) -> None:
+    stamp = time.strftime("%H:%M:%S")
+    print(f"[{stamp}] {message}", file=sys.stderr, flush=True)
+
+
 def fetch_json(url: str):
     if NO_NETWORK:
         raise RuntimeError("network disabled by --no-network")
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-            "Referer": "http://quote.eastmoney.com/",
-        },
-    )
+    attempts = max(1, int(REQUEST_RETRIES))
     last_exc = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Referer": "http://quote.eastmoney.com/",
+                },
+            )
             with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             last_exc = exc
-            if attempt == 0:
-                time.sleep(0.5)
+            if attempt < attempts - 1:
+                time.sleep(retry_delay(attempt))
     raise last_exc
 
 
@@ -185,26 +209,27 @@ def fetch_json_post(url: str, payload: dict):
     if NO_NETWORK:
         raise RuntimeError("network disabled by --no-network")
     data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        url,
-        data=data,
-        headers={
-            "User-Agent": "Mozilla/5.0",
-            "Accept": "application/json,text/plain,*/*",
-            "Content-Type": "application/json;charset=UTF-8",
-            "Referer": "https://guba.eastmoney.com/rank/",
-        },
-        method="POST",
-    )
+    attempts = max(1, int(REQUEST_RETRIES))
     last_exc = None
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept": "application/json,text/plain,*/*",
+                    "Content-Type": "application/json;charset=UTF-8",
+                    "Referer": "https://guba.eastmoney.com/rank/",
+                },
+                method="POST",
+            )
             with urllib.request.urlopen(req, timeout=20) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception as exc:
             last_exc = exc
-            if attempt == 0:
-                time.sleep(0.5)
+            if attempt < attempts - 1:
+                time.sleep(retry_delay(attempt))
     raise last_exc
 
 
@@ -557,6 +582,7 @@ def fetch_kline(symbol: str):
 
 
 def fetch_sina_kline(symbol: str):
+    sleep_before_kline_request()
     payload = fetch_json(KLINE_URL.format(symbol=urllib.parse.quote(symbol)))
     rows = []
     for item in payload:
@@ -576,7 +602,7 @@ def fetch_sina_kline(symbol: str):
 
 
 def fetch_eastmoney_kline(symbol: str):
-    time.sleep(0.12)
+    sleep_before_kline_request()
     url = EASTMONEY_KLINE_URL.format(secid=eastmoney_secid(symbol), end_date=SCREENING_DATE.replace("-", ""))
     payload = fetch_json(url)
     klines = payload.get("data", {}).get("klines") or []
@@ -601,6 +627,7 @@ def fetch_eastmoney_kline(symbol: str):
 
 
 def fetch_tencent_kline(symbol: str):
+    sleep_before_kline_request()
     payload = fetch_json(TENCENT_KLINE_URL.format(symbol=urllib.parse.quote(symbol)))
     stock_data = payload.get("data", {}).get(symbol, {})
     klines = stock_data.get("qfqday") or stock_data.get("day") or []
@@ -1404,15 +1431,24 @@ def parse_args():
     parser.add_argument("--runs-dir", default="runs", help="Run artifact root directory.")
     parser.add_argument("--top200", help="Optional verified same-day turnover top-200 CSV.")
     parser.add_argument("--max-candidates", type=int, help="Optional per-source cap for fast runs when data sources throttle.")
-    parser.add_argument("--workers", type=int, default=12, help="Parallel workers for daily K-line fetches.")
+    parser.add_argument("--workers", type=int, default=4, help="Parallel workers for daily K-line fetches.")
+    parser.add_argument("--request-retries", type=int, default=4, help="HTTP retry attempts for quote and K-line APIs.")
+    parser.add_argument("--request-backoff", type=float, default=1.0, help="Base seconds for exponential retry backoff.")
+    parser.add_argument("--request-jitter", type=float, default=0.35, help="Random extra seconds added to retries and K-line pacing.")
+    parser.add_argument("--kline-request-delay", type=float, default=0.35, help="Base seconds to wait before each K-line HTTP request.")
     parser.add_argument("--no-network", action="store_true", help="Disable network access.")
     return parser.parse_args()
 
 
 def configure(args):
     global RUN_DIR, RUNS_ROOT, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK
+    global REQUEST_RETRIES, REQUEST_BACKOFF, REQUEST_JITTER, KLINE_REQUEST_DELAY
     SCREENING_DATE = args.date
     NO_NETWORK = bool(args.no_network)
+    REQUEST_RETRIES = max(1, int(args.request_retries or 1))
+    REQUEST_BACKOFF = max(0.0, float(args.request_backoff or 0.0))
+    REQUEST_JITTER = max(0.0, float(args.request_jitter or 0.0))
+    KLINE_REQUEST_DELAY = max(0.0, float(args.kline_request_delay or 0.0))
     runs_root = Path(args.runs_dir)
     if not runs_root.is_absolute():
         runs_root = ROOT / runs_root
@@ -1434,10 +1470,21 @@ def configure(args):
 def main():
     args = parse_args()
     configure(args)
+    progress(
+        "start ashare-trend-buy "
+        f"date={SCREENING_DATE} workers={args.workers} "
+        f"max_candidates={args.max_candidates or 'full'} "
+        f"retries={REQUEST_RETRIES}"
+    )
+    progress("fetching candidate pools")
     pools = read_candidate_pools()
     for pool in pools:
         if args.max_candidates:
             pool["rows"] = pool["rows"][: args.max_candidates]
+        progress(
+            f"pool loaded key={pool['key']} candidates={len(pool['rows'])} "
+            f"source={pool['source_label']} error={pool.get('error', '') or '-'}"
+        )
 
     symbol_rows = {}
     for pool in pools:
@@ -1446,22 +1493,34 @@ def main():
 
     kline_cache = {}
     workers = max(1, int(args.workers or 1))
+    total_symbols = len(symbol_rows)
+    progress(f"fetching daily kline symbols={total_symbols} workers={workers}")
     with ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_symbol = {
             executor.submit(fetch_kline, row["symbol"]): row["symbol"]
             for row in symbol_rows.values()
         }
+        completed = 0
+        failed = 0
         for future in as_completed(future_to_symbol):
             symbol = future_to_symbol[future]
             try:
                 kline_cache[symbol] = future.result()
             except Exception as exc:
                 kline_cache[symbol] = exc
+                failed += 1
+            completed += 1
+            if completed == total_symbols or completed % 10 == 0:
+                progress(
+                    f"kline progress completed={completed}/{total_symbols} "
+                    f"failed={failed}"
+                )
 
     pool_outputs = []
     for pool in pools:
         candidates = pool["rows"]
         results = []
+        progress(f"scoring pool key={pool['key']} candidates={len(candidates)}")
         for row in candidates:
             try:
                 cached = kline_cache[row["symbol"]]
@@ -1482,6 +1541,10 @@ def main():
                 "results": results,
                 "tier_counts": dict(Counter(r["tier"] for r in calculated)),
             }
+        )
+        progress(
+            f"pool scored key={pool['key']} calculated={len(calculated)}/{len(candidates)} "
+            f"tier_counts={dict(Counter(r['tier'] for r in calculated))}"
         )
 
     combined_rows = merge_recommendations(pool_outputs)
@@ -1506,8 +1569,13 @@ def main():
         "tier_counts": dict(Counter(r["tier"] for r in calculated)),
         "combined_count": len(combined_rows),
     }
+    progress(f"writing report path={RUN_DIR / f'{SCREENING_DATE}.md'}")
     report = generate_multi_source_report(pool_outputs, combined_rows, summary)
     (RUN_DIR / f"{SCREENING_DATE}.md").write_text(report, encoding="utf-8")
+    progress(
+        f"done calculated={summary['calculated_count']}/{summary['candidate_count']} "
+        f"combined={summary['combined_count']}"
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     for row in combined_rows[:25]:
         print(row["tier"], row.get("composite_score", row["score"]), row["code"], row["name"], row["theme"], row["date"], row.get("combined_sources", ""))
