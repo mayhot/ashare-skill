@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-08
+
+- skills: Added `ashare-kline-sqlite-cache --repair-missing` to repair per-date K-line gaps in bounded `--symbols-only` batches while preserving existing popularity snapshots.
+- skills: Added K-line coverage, missing-prefix, popularity-count, unfinished-run, and SQLite writability preflight checks to the K-line cache repair workflow.
+- skills: Updated `ashare-kline-sqlite-cache` documentation with the failed-run repair playbook and validation expectations.
+- skills: Preserved cached `stock_universe` metadata during `--symbols-only` repair runs instead of replacing names and official-source fields with bare code rows.
+
 ## 2026-06-05
 
 - skills: Added repository-wide SQLite database ignore rules so cache databases and WAL/SHM sidecars stay out of commits.

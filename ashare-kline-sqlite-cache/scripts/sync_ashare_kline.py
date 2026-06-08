@@ -1549,6 +1549,83 @@ def latest_date_summary(conn: sqlite3.Connection, limit: int = 10) -> list[dict[
     ]
 
 
+def kline_coverage_for_date(conn: sqlite3.Connection, trade_date: str) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS universe_count,
+               SUM(
+                 CASE WHEN EXISTS (
+                   SELECT 1
+                   FROM daily_kline k
+                   WHERE k.code = u.code AND k.trade_date = ?
+                 )
+                 THEN 1 ELSE 0 END
+               ) AS cached_count
+        FROM stock_universe u
+        """,
+        (trade_date,),
+    ).fetchone()
+    universe_count = int(row[0] or 0)
+    cached_count = int(row[1] or 0)
+    return {
+        "trade_date": trade_date,
+        "universe_count": universe_count,
+        "cached_count": cached_count,
+        "missing_count": max(0, universe_count - cached_count),
+    }
+
+
+def missing_kline_stocks(conn: sqlite3.Connection, trade_date: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+            u.code, u.name, u.exchange, u.secid, u.board, u.listing_date,
+            u.industry, u.region, u.official_source, u.raw_json
+        FROM stock_universe u
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM daily_kline k
+            WHERE k.code = u.code AND k.trade_date = ?
+        )
+        ORDER BY u.code
+        """,
+        (trade_date,),
+    ).fetchall()
+    return [
+        {
+            "code": row[0],
+            "name": row[1] or row[0],
+            "exchange": row[2] or exchange_for_code(row[0]),
+            "secid": row[3] or secid_for_code(row[0]),
+            "board": row[4],
+            "listing_date": row[5],
+            "industry": row[6],
+            "region": row[7],
+            "official_source": row[8],
+            "raw_json": row[9] or "{}",
+        }
+        for row in rows
+    ]
+
+
+def prefix_counts(stocks: list[dict[str, Any]]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for stock in stocks:
+        prefix = normalize_code(stock["code"])[:3]
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def popularity_count_for_date(conn: sqlite3.Connection, trade_date: str) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM popularity_top100 WHERE trade_date = ?", (trade_date,)).fetchone()
+    return int(row[0] or 0)
+
+
+def unfinished_run_count(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM sync_runs WHERE finished_at IS NULL").fetchone()
+    return int(row[0] or 0)
+
+
 def distinct_trade_day_count(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(DISTINCT trade_date) FROM daily_kline").fetchone()
     return int(row[0] or 0)
@@ -1583,6 +1660,40 @@ def stock_rows_from_symbols(symbols: str) -> list[dict[str, Any]]:
             }
         )
     return rows
+
+
+def stock_rows_from_symbols_cached(conn: sqlite3.Connection, symbols: str) -> list[dict[str, Any]]:
+    basic_rows = stock_rows_from_symbols(symbols)
+    if not basic_rows:
+        return []
+    codes = [row["code"] for row in basic_rows]
+    placeholders = ",".join("?" for _ in codes)
+    cached_rows = conn.execute(
+        f"""
+        SELECT
+            code, name, exchange, secid, board, listing_date,
+            industry, region, official_source, raw_json
+        FROM stock_universe
+        WHERE code IN ({placeholders})
+        """,
+        tuple(codes),
+    ).fetchall()
+    cached_by_code = {
+        row[0]: {
+            "code": row[0],
+            "name": row[1] or row[0],
+            "exchange": row[2] or exchange_for_code(row[0]),
+            "secid": row[3] or secid_for_code(row[0]),
+            "board": row[4],
+            "listing_date": row[5],
+            "industry": row[6],
+            "region": row[7],
+            "official_source": row[8],
+            "raw_json": row[9] or "{}",
+        }
+        for row in cached_rows
+    }
+    return [cached_by_code.get(row["code"], row) for row in basic_rows]
 
 
 def stock_rows_from_seed_csv(csv_path: Path, limit: int | None) -> list[dict[str, Any]]:
@@ -1645,6 +1756,17 @@ def enforce_time_guard(args: argparse.Namespace) -> None:
         )
 
 
+def check_database_writable(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.rollback()
+    except sqlite3.OperationalError as exc:
+        raise SystemExit(
+            "SQLite database is not writable in the current execution context. "
+            "Close stale sync processes or rerun with permissions that can write the database and WAL sidecar."
+        ) from exc
+
+
 def sync(args: argparse.Namespace) -> dict[str, Any]:
     run_started = time.time()
     enforce_time_guard(args)
@@ -1667,7 +1789,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         elif args.symbols_only:
             if not args.symbols:
                 raise SystemExit("--symbols-only requires --symbols")
-            stocks = stock_rows_from_symbols(args.symbols)
+            stocks = stock_rows_from_symbols_cached(conn, args.symbols)
             universe_source = "symbols_only"
         elif args.universe_source == "official" and not should_refresh_official_universe(conn, args):
             stocks = load_cached_official_universe(conn, args.limit)
@@ -1691,7 +1813,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                 elif not args.symbols:
                     raise
                 else:
-                    stocks = stock_rows_from_symbols(args.symbols)
+                    stocks = stock_rows_from_symbols_cached(conn, args.symbols)
                     universe_source = f"symbols_fallback:{exc}"
         if args.symbols:
             wanted = {normalize_code(code) for code in args.symbols.split(",") if normalize_code(code)}
@@ -1904,6 +2026,122 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         }
 
 
+def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
+    run_started = time.time()
+    enforce_time_guard(args)
+    db_path = Path(args.db)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with closing(sqlite3.connect(db_path)) as conn:
+        ensure_schema(conn)
+        check_database_writable(conn)
+        initial_coverage = kline_coverage_for_date(conn, args.trade_date)
+        initial_missing = missing_kline_stocks(conn, args.trade_date)
+        initial_popularity_count = popularity_count_for_date(conn, args.trade_date)
+        open_runs = unfinished_run_count(conn)
+        if initial_coverage["universe_count"] <= 0:
+            raise SystemExit(
+                "stock_universe is empty; run --mode init or --mode daily once before --repair-missing."
+            )
+
+    log(f"repair: database={db_path}")
+    log(
+        "repair: preflight "
+        f"trade_date={args.trade_date} universe={initial_coverage['universe_count']} "
+        f"cached={initial_coverage['cached_count']} missing={initial_coverage['missing_count']} "
+        f"popularity_rows={initial_popularity_count} unfinished_runs={open_runs}"
+    )
+    if initial_missing:
+        log(f"repair: missing_by_prefix={prefix_counts(initial_missing)}")
+    if initial_popularity_count:
+        log("repair: preserving existing popularity rows; K-line repair batches force --skip-popularity")
+    if open_runs:
+        log("repair: unfinished sync_runs exist; verify no stale Python sync process is still running")
+
+    attempted: set[str] = set()
+    batch_summaries: list[dict[str, Any]] = []
+    total_rows_upserted = 0
+    total_failures = 0
+    batch_limit = args.repair_max_batches if args.repair_max_batches and args.repair_max_batches > 0 else None
+    batch_number = 0
+
+    while True:
+        with closing(sqlite3.connect(db_path)) as conn:
+            ensure_schema(conn)
+            missing = missing_kline_stocks(conn, args.trade_date)
+        candidates = [stock for stock in missing if stock["code"] not in attempted]
+        if not candidates:
+            break
+        if batch_limit is not None and batch_number >= batch_limit:
+            break
+        batch_number += 1
+        batch = candidates[: max(1, args.repair_chunk_size)]
+        attempted.update(stock["code"] for stock in batch)
+        batch_codes = ",".join(stock["code"] for stock in batch)
+        batch_args = argparse.Namespace(**vars(args))
+        batch_args.mode = "daily"
+        batch_args.symbols = batch_codes
+        batch_args.symbols_only = True
+        batch_args.skip_popularity = True
+        batch_args.limit = None
+        batch_args.seed_kline_csv = None
+        batch_args.seed_universe_only = False
+        before_missing = len(missing)
+        log(
+            "repair batch: "
+            f"{batch_number} size={len(batch)} first={batch[0]['code']} last={batch[-1]['code']} "
+            f"remaining_before={before_missing}"
+        )
+        summary = sync(batch_args)
+        with closing(sqlite3.connect(db_path)) as conn:
+            after_coverage = kline_coverage_for_date(conn, args.trade_date)
+        total_rows_upserted += int(summary["rows_upserted"])
+        total_failures += int(summary["failures"])
+        batch_summary = {
+            "batch": batch_number,
+            "stock_count": len(batch),
+            "run_id": summary["run_id"],
+            "rows_upserted": summary["rows_upserted"],
+            "failures": summary["failures"],
+            "missing_after": after_coverage["missing_count"],
+            "kline_source_counts": summary["kline_source_counts"],
+        }
+        batch_summaries.append(batch_summary)
+        log(
+            "repair batch: "
+            f"{batch_number} done run_id={summary['run_id']} "
+            f"rows_upserted={summary['rows_upserted']:,} failures={summary['failures']} "
+            f"missing_after={after_coverage['missing_count']}"
+        )
+
+    with closing(sqlite3.connect(db_path)) as conn:
+        final_coverage = kline_coverage_for_date(conn, args.trade_date)
+        final_missing = missing_kline_stocks(conn, args.trade_date)
+        latest_dates = latest_date_summary(conn)
+    log(
+        "repair: done "
+        f"elapsed={format_duration(time.time() - run_started)} "
+        f"batches={len(batch_summaries)} total_rows_upserted={total_rows_upserted:,} "
+        f"total_failures={total_failures} missing={final_coverage['missing_count']}"
+    )
+    if final_missing:
+        log(f"repair: remaining_missing_by_prefix={prefix_counts(final_missing)}")
+    return {
+        "database": str(db_path),
+        "mode": "repair-missing",
+        "trade_date": args.trade_date,
+        "initial_coverage": initial_coverage,
+        "final_coverage": final_coverage,
+        "initial_popularity_count": initial_popularity_count,
+        "unfinished_runs": open_runs,
+        "batches": batch_summaries,
+        "total_rows_upserted": total_rows_upserted,
+        "total_failures": total_failures,
+        "remaining_missing_by_prefix": prefix_counts(final_missing),
+        "remaining_missing_sample": [stock["code"] for stock in final_missing[:80]],
+        "latest_dates": latest_dates,
+    }
+
+
 def self_test() -> None:
     with TemporaryDirectory() as tmp:
         db = Path(tmp) / "test.sqlite"
@@ -1919,6 +2157,10 @@ def self_test() -> None:
                 }
             ]
             upsert_stock_universe(conn, stocks)
+            cached_symbols = stock_rows_from_symbols_cached(conn, "000001,000004")
+            assert cached_symbols[0]["name"] == "sample"
+            assert cached_symbols[0]["raw_json"] == "{}"
+            assert cached_symbols[1]["code"] == "000004"
             upsert_stock_universe(
                 conn,
                 [
@@ -2020,6 +2262,13 @@ def self_test() -> None:
                     }
                 ],
             ) == 1
+            coverage = kline_coverage_for_date(conn, "2026-06-04")
+            assert coverage["universe_count"] == 1
+            assert coverage["cached_count"] == 1
+            assert coverage["missing_count"] == 0
+            assert missing_kline_stocks(conn, "2026-06-04") == []
+            assert popularity_count_for_date(conn, "2026-06-04") == 0
+            assert unfinished_run_count(conn) == 0
             jobs = build_fetch_jobs(
                 conn,
                 [{"code": "000001"}, {"code": "000002"}, {"code": "000003"}],
@@ -2084,6 +2333,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols-only", action="store_true", help="use --symbols directly and skip full-market universe fetch")
     parser.add_argument("--seed-kline-csv", help="load existing kline CSV before fetching missing rows from the network")
     parser.add_argument("--seed-universe-only", action="store_true", help="derive the stock universe from --seed-kline-csv and skip online universe fetch")
+    parser.add_argument("--repair-missing", action="store_true", help="repair only symbols missing K-line rows for --trade-date")
+    parser.add_argument("--repair-chunk-size", type=int, default=150, help="symbols per --repair-missing batch")
+    parser.add_argument("--repair-max-batches", type=int, default=0, help="maximum repair batches; 0 means all missing symbols")
     parser.add_argument("--self-test", action="store_true")
     return parser.parse_args()
 
@@ -2093,7 +2345,7 @@ def main() -> None:
     if args.self_test:
         self_test()
         return
-    summary = sync(args)
+    summary = repair_missing(args) if args.repair_missing else sync(args)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
