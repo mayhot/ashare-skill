@@ -41,6 +41,16 @@ For the normal daily post-close job:
 python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py --mode daily
 ```
 
+Repair only K-line gaps for an already initialized trade date:
+
+```powershell
+python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
+  --repair-missing `
+  --trade-date 2026-06-05 `
+  --repair-chunk-size 150 `
+  --skip-popularity
+```
+
 The default daily guard allows same-day runs from 15:30 through 23:59:59 Asia/Shanghai. Use `--allow-before-close` only for tests, non-trading-day repairs, or explicit user requests.
 
 ## Workflow
@@ -58,6 +68,33 @@ The default daily guard allows same-day runs from 15:30 through 23:59:59 Asia/Sh
 5. Apply K-line retention pruning only during historical initialization (`mode=init`). Daily scheduled runs must not delete historical `daily_kline` dates.
 6. Fetch popularity ranking only for the requested `trade_date`; do not backfill historical popularity rankings.
    Replacement and failure cleanup only delete rows for the requested `trade_date`; existing historical popularity rows are left untouched.
+
+## Failed Run Repair
+
+When a full-market run hangs, times out, or leaves partial same-day coverage, do not immediately rerun the whole market at high concurrency.
+
+1. Confirm there is no stale Python sync process still writing the database. If `sync_runs.finished_at` has null rows, treat them as audit clues and verify the process list before starting another writer.
+2. Check the requested trade date coverage against `stock_universe`, the latest K-line date summary, and `popularity_top100` count for the same trade date.
+3. If popularity already has a valid snapshot, repair K-lines with `--repair-missing`; repair batches force `--symbols-only` and preserve existing popularity rows by using `--skip-popularity`.
+4. Use bounded batches first. A typical repair command is:
+
+```powershell
+python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
+  --repair-missing `
+  --trade-date 2026-06-05 `
+  --repair-chunk-size 150 `
+  --repair-max-batches 4 `
+  --max-workers 4 `
+  --request-timeout 12 `
+  --request-attempts 2 `
+  --request-delay 0.05 `
+  --request-jitter 0.1
+```
+
+5. If bounded batches improve coverage, rerun without `--repair-max-batches` or with a higher limit. If a source repeatedly fails, switch source order only for diagnosis, for example `--kline-sources eastmoney` or `--kline-sources tencent`.
+6. Report final coverage as `cached_count / universe_count`, missing prefix distribution, latest K-line date summary, popularity row count, and whether remaining gaps are public-endpoint failures. Do not fabricate rows for remaining gaps.
+
+`--repair-missing` requires an existing `stock_universe`; run `--mode init` or a normal `--mode daily` first if the database is empty. The repair wrapper writes one normal `sync_runs` row per batch so failures can still be inspected in `fetch_failures`.
 
 ## Data Fields
 
@@ -202,6 +239,15 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
   --skip-popularity
 ```
 
+Repair missing K-line rows for one trade date while preserving existing popularity rows:
+
+```powershell
+python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
+  --repair-missing `
+  --trade-date 2026-06-05 `
+  --repair-chunk-size 150
+```
+
 For long full-market runs, keep progress output frequent:
 
 ```powershell
@@ -265,7 +311,8 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py --self-test
 2. Confirm `daily_kline` has no more than 126 distinct `trade_date` values after `mode=init`; do not require this check after `mode=daily`, because daily jobs must not prune older dates.
 3. Confirm `popularity_top100` has no duplicate ranks for the requested `trade_date`, and normally exactly 100 rows for that date after a successful live sync.
 4. Confirm recent dates have broad symbol coverage; a large `fetch_failures` count means the market cache is incomplete.
-5. State clearly whether the data came from live network fetches or only from self-test/sample mode.
+5. After `--repair-missing`, confirm the final `cached_count`, `universe_count`, remaining missing prefix distribution, and `remaining_missing_sample` from the JSON summary.
+6. State clearly whether the data came from live network fetches or only from self-test/sample mode.
 
 ## Guardrails
 
