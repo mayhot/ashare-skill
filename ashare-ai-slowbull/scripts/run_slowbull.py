@@ -155,7 +155,7 @@ def fetch_cached_turnover_top200(db_path: Path, trade_date: str) -> list[dict[st
         rows = conn.execute(
             """
             SELECT t.rank, t.code, t.name, t.amount, t.volume, t.turnover_ratio,
-                   t.latest_price, t.pct_chg, t.fetched_at, u.total_mv
+                   t.latest_price, t.pct_chg, t.fetched_at, t.raw_json, u.total_mv
             FROM turnover_top200 t
             LEFT JOIN stock_universe u ON u.code = t.code
             WHERE t.trade_date = ?
@@ -166,21 +166,32 @@ def fetch_cached_turnover_top200(db_path: Path, trade_date: str) -> list[dict[st
         ).fetchall()
     if len(rows) < 200:
         return []
-    return [
-        {
-            "rank": int(row["rank"]),
-            "symbol": stock_symbol(str(row["code"])),
-            "code": str(row["code"]),
-            "name": row["name"] or "",
-            "trade": row["latest_price"] or 0,
-            "changepercent": row["pct_chg"] or 0,
-            "turnoverratio": row["turnover_ratio"] or 0,
-            "amount": row["amount"] or 0,
-            "mktcap": (row["total_mv"] or 0) / 10000,
-            "ticktime": row["fetched_at"] or trade_date,
-        }
-        for row in rows
-    ]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        raw: dict[str, Any] = {}
+        if row["raw_json"]:
+            try:
+                raw = json.loads(row["raw_json"])
+            except json.JSONDecodeError:
+                raw = {}
+        mktcap = raw.get("mktcap")
+        if mktcap is None and row["total_mv"] is not None:
+            mktcap = float(row["total_mv"]) / 10000
+        result.append(
+            {
+                "rank": int(row["rank"]),
+                "symbol": raw.get("symbol") or stock_symbol(str(row["code"])),
+                "code": str(row["code"]),
+                "name": row["name"] or raw.get("name") or "",
+                "trade": row["latest_price"] if row["latest_price"] is not None else raw.get("trade", 0),
+                "changepercent": row["pct_chg"] if row["pct_chg"] is not None else raw.get("changepercent", 0),
+                "turnoverratio": row["turnover_ratio"] if row["turnover_ratio"] is not None else raw.get("turnoverratio", 0),
+                "amount": row["amount"] if row["amount"] is not None else raw.get("amount", 0),
+                "mktcap": mktcap or 0,
+                "ticktime": row["fetched_at"] or raw.get("ticktime") or trade_date,
+            }
+        )
+    return result
 
 
 def fetch_cached_daily_k(

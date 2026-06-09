@@ -2,6 +2,9 @@
 
 ## 2026-06-09
 
+- runs: Added the 2026-06-09 `ashare-ai-slowbull`, `ashare-trend-buy`, and `ashare-volume-doubled-uptrend` run artifacts.
+- notes: Validated with `ashare-volume-doubled-uptrend --self-test` and targeted `compileall` using a temporary pycache prefix because the existing in-tree `__pycache__` files were not writable.
+
 - skills: Updated `ashare-volume-doubled-uptrend` market-cap filtering to detect central-cache `total_mv` values stored in 10k-CNY units and normalize them to yuan before applying the default 20bn-yuan threshold.
 
 - skills: Updated `ashare-trend-buy` report tables so turnover, popularity, and combined result sections explicitly use `股票名称` and `股票代码` columns.
