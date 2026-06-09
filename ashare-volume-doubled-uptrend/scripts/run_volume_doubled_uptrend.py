@@ -413,6 +413,17 @@ def format_market_cap_threshold(value: float) -> str:
     return f"{value / 100_000_000:.0f} yi CNY"
 
 
+def infer_market_cap_scale(values: list[float], threshold: float) -> tuple[float, str]:
+    valid_values = [value for value in values if not math.isnan(value)]
+    if threshold <= 0 or not valid_values:
+        return 1.0, "yuan"
+    if any(value >= threshold for value in valid_values):
+        return 1.0, "yuan"
+    if any(value * 10_000 >= threshold for value in valid_values):
+        return 10_000.0, "10k CNY normalized to yuan"
+    return 1.0, "yuan"
+
+
 def filter_stock_rows_by_market_cap(stock_rows: list[dict], args: argparse.Namespace) -> tuple[list[dict], dict]:
     threshold = float(args.min_market_cap_yuan or 0)
     if threshold <= 0:
@@ -429,12 +440,14 @@ def filter_stock_rows_by_market_cap(stock_rows: list[dict], args: argparse.Names
     kept: list[dict] = []
     removed_small = 0
     removed_missing = 0
+    raw_market_caps = [market_cap_from_row(row) for row in stock_rows]
+    market_cap_scale, market_cap_unit = infer_market_cap_scale(raw_market_caps, threshold)
     for row in stock_rows:
         market_cap = market_cap_from_row(row)
         if math.isnan(market_cap):
             removed_missing += 1
             continue
-        if market_cap < threshold:
+        if market_cap * market_cap_scale < threshold:
             removed_small += 1
             continue
         kept.append(row)
@@ -446,7 +459,8 @@ def filter_stock_rows_by_market_cap(stock_rows: list[dict], args: argparse.Names
         "market_cap_kept_count": len(kept),
         "market_cap_removed_small_count": removed_small,
         "market_cap_removed_missing_count": removed_missing,
-        "market_cap_source": "stock_list",
+        "market_cap_source": f"stock_list ({market_cap_unit})",
+        "market_cap_value_scale": market_cap_scale,
     }
 
 
@@ -478,8 +492,13 @@ def filter_dataframe_by_market_cap(df: "pd.DataFrame", args: argparse.Namespace)
         .last()
         .map(to_float)
     )
+    market_cap_scale, market_cap_unit = infer_market_cap_scale(list(market_caps.values), threshold)
     all_codes = set(df["code"].dropna().astype(str).unique())
-    kept_codes = {code for code, value in market_caps.items() if valid_market_cap(value, threshold)}
+    kept_codes = {
+        code
+        for code, value in market_caps.items()
+        if not math.isnan(value) and value * market_cap_scale >= threshold
+    }
     codes_with_cap = set(market_caps.index.astype(str))
     removed_missing = len(all_codes - codes_with_cap)
     removed_small = len(codes_with_cap - kept_codes)
@@ -492,7 +511,8 @@ def filter_dataframe_by_market_cap(df: "pd.DataFrame", args: argparse.Namespace)
         "market_cap_kept_count": len(kept_codes),
         "market_cap_removed_small_count": removed_small,
         "market_cap_removed_missing_count": removed_missing,
-        "market_cap_source": f"csv:{cap_col}",
+        "market_cap_source": f"csv:{cap_col} ({market_cap_unit})",
+        "market_cap_value_scale": market_cap_scale,
     }
 
 
@@ -1348,6 +1368,15 @@ def self_test(args: argparse.Namespace) -> None:
     assert [row["code"] for row in filtered_rows] == ["000001"], "market cap filter should keep only >= 20bn yuan"
     assert market_cap_meta["market_cap_removed_small_count"] == 1, "small market cap sample should be removed"
     assert market_cap_meta["market_cap_removed_missing_count"] == 1, "missing market cap sample should be removed"
+    filtered_rows_10k, market_cap_meta_10k = filter_stock_rows_by_market_cap(
+        [
+            {"code": "000001", "name": "large_10k_cny", "total_mv": 2_500_000},
+            {"code": "000002", "name": "small_10k_cny", "total_mv": 1_900_000},
+        ],
+        args,
+    )
+    assert [row["code"] for row in filtered_rows_10k] == ["000001"], "10k-CNY market cap values should be normalized"
+    assert market_cap_meta_10k["market_cap_value_scale"] == 10_000.0, "10k-CNY scale should be reported"
     with TemporaryDirectory() as temp_dir:
         args.runs_dir = temp_dir
         args.cache_dir = None

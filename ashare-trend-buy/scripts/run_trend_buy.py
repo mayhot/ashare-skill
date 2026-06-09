@@ -1225,7 +1225,7 @@ def generate_report(rows, summary):
     display_rows = display_a + display_b + display_c + display_hot + display_x
 
     def names(items):
-        return "、".join(r["name"] for r in items) if items else "无"
+        return "、".join(display_name(r) for r in items) if items else "无"
 
     top_themes = Counter(r["theme"] for r in valid).most_common(5)
     theme_text = "、".join(f"{theme}({count})" for theme, count in top_themes) if top_themes else "无"
@@ -1262,23 +1262,23 @@ def generate_report(rows, summary):
     lines.append(f"- 过热跟踪，不追高（最多5只）：{names(display_hot)}")
     lines.append(f"- 剔除/暂不追（最多5只）：{names(display_x)}")
     if hard_removed:
-        hard_text = "；".join(f"{r['name']}({r['severe_flags']})" for r in display_x if r.get("severe_flags"))
+        hard_text = "；".join(f"{display_name(r)}({r['severe_flags']})" for r in display_x if r.get("severe_flags"))
         lines.append(f"- 高分剔除原因：{hard_text or '详见核心表格和逐个点评'}")
     lines.append("")
     lines.append("## 二、核心表格")
     lines.append("")
-    lines.append("| 档位 | 状态 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
+    lines.append("| 档位 | 状态 | 排名 | 股票名称 | 股票代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
     lines.append("|---|---|---:|---|---:|---|---|---|---|---|---|---|---:|---|---|")
     for r in display_rows:
         macd_kdj = f"{r['macd']}；{r['kdj']}，K={r['k']}/D={r['d']}/J={r['j']}"
-        key_data = f"成交额{r['amount_yi']:.2f}亿，换手{r['turnoverratio']:.2f}%，涨跌幅{r['changepercent']:.2f}%，距20日线{r['dist20_pct']:.2f}%，{r['ma20_state']}，K线{r['date']}"
+        key_data = f"{quote_summary_text(r)}，距20日线{r['dist20_pct']:.2f}%，{r['ma20_state']}，K线{r['date']}"
         vol = f"量比{r['vol_ratio']:.2f}；成交额排名{r['rank']}"
         tech = f"{r['trend_state']}，{r['structure']}，距20日线{r['dist20_pct']:.2f}%"
         logic = f"{r['theme']}主线；{r['front_row_state']}；{r['tier_reason']}；基本面需另行复核"
         score_text = f"{r['score']}（原始）" if r["tier"] == "剔除" and r.get("severe_flags") else str(r["score"])
         buy_watch_text = f"暂不观察；{r['tier_reason']}" if r["tier"] == "剔除" and r.get("severe_flags") else r["buy_watch"]
         lines.append(
-            f"| {r['tier']} | {r.get('state', r['tier'])} | {r['rank']} | {r['name']} | {r['code']} | {r['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {r['support']} | {score_text} | {r['position_plan']} | {buy_watch_text} |"
+            f"| {r['tier']} | {r.get('state', r['tier'])} | {r['rank']} | {display_name(r)} | {r['code']} | {r['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {r['support']} | {score_text} | {r['position_plan']} | {buy_watch_text} |"
         )
     lines.append("")
     lines.append("## 三、逐个点评")
@@ -1286,8 +1286,8 @@ def generate_report(rows, summary):
     for r in display_rows:
         risk = r["flags"] if r["flags"] else "主要风险是板块高位波动和买点未经二次确认"
         lines.append(
-            f"{r['name']}：方向/主线为{r['theme']}，成交额排名{r['rank']}、成交额{r['amount_yi']:.2f}亿、"
-            f"换手{r['turnoverratio']:.2f}%、距20日线{r['dist20_pct']:.2f}%。趋势结构是{r['trend_state']}、{r['structure']}；"
+            f"{display_name(r)}：方向/主线为{r['theme']}，成交额排名{r['rank']}、成交额{amount_text(r)}、"
+            f"换手{quote_pct_text(r, 'turnoverratio')}、距20日线{r['dist20_pct']:.2f}%。趋势结构是{r['trend_state']}、{r['structure']}；"
             f"MACD/KDJ为{r['macd']}、{r['kdj']}，只作辅助确认。量价/资金看量比{r['vol_ratio']:.2f}。"
             f"证据/逻辑为{r['theme']}主线、{r['front_row_state']}，基本面需结合公告和财报复核。仓位比例为{r['position_plan']}；买点观察是{r['buy_watch']}；"
             f"支撑/失效看{r['support']}。档位原因：{r['tier_reason']}。主要风险：{risk}。"
@@ -1346,7 +1346,7 @@ def display_rows_for(rows: list[dict]) -> list[dict]:
 
 
 def names_for(rows: list[dict]) -> str:
-    return "、".join(row["name"] for row in rows) if rows else "无"
+    return "、".join(display_name(row) for row in rows) if rows else "无"
 
 
 def rank_text(row: dict) -> str:
@@ -1358,6 +1358,90 @@ def rank_text(row: dict) -> str:
     if row.get("hot_rank") and label != "人气排名":
         parts.append(f"人气排名{row['hot_rank']}")
     return "；".join(str(part) for part in parts if part)
+
+
+def display_name(row: dict) -> str:
+    return row.get("name") or row.get("code") or row.get("symbol") or "未知标的"
+
+
+def quote_fields_missing(row: dict) -> bool:
+    return (
+        fnum(row.get("amount_yi")) <= 0
+        and fnum(row.get("trade")) <= 0
+        and fnum(row.get("turnoverratio")) <= 0
+        and fnum(row.get("changepercent")) == 0
+    )
+
+
+def amount_text(row: dict) -> str:
+    return "未取得" if fnum(row.get("amount_yi")) <= 0 else f"{fnum(row.get('amount_yi')):.2f}亿"
+
+
+def quote_pct_text(row: dict, field: str) -> str:
+    return "未取得" if quote_fields_missing(row) else f"{fnum(row.get(field)):.2f}%"
+
+
+def quote_summary_text(row: dict) -> str:
+    return (
+        f"成交额{amount_text(row)}，"
+        f"换手{quote_pct_text(row, 'turnoverratio')}，"
+        f"涨跌幅{quote_pct_text(row, 'changepercent')}"
+    )
+
+
+def fill_missing_candidate_names(pools: list[dict]) -> None:
+    code_names = {}
+    code_metrics = {}
+    for pool in pools:
+        for row in pool["rows"]:
+            name = str(row.get("name") or "").strip()
+            if name:
+                code_names.setdefault(row["code"], name)
+            metrics = code_metrics.setdefault(row["code"], {})
+            for field in ("trade", "changepercent", "turnoverratio", "amount_yi", "mktcap_yi"):
+                value = fnum(row.get(field))
+                if value:
+                    metrics.setdefault(field, value)
+            if row.get("source_type") == "turnover_top200" and row.get("source_rank"):
+                metrics.setdefault("turnover_rank", row["source_rank"])
+    if MARKET_CACHE_DB.exists() and not IGNORE_MARKET_CACHE:
+        missing_codes = sorted(
+            {
+                row["code"]
+                for pool in pools
+                for row in pool["rows"]
+                if not str(row.get("name") or "").strip()
+            }
+        )
+        if missing_codes:
+            placeholders = ",".join("?" for _ in missing_codes)
+            with sqlite3.connect(str(MARKET_CACHE_DB.resolve())) as conn:
+                conn.row_factory = sqlite3.Row
+                if sqlite_table_exists(conn, "stock_universe"):
+                    rows = conn.execute(
+                        f"""
+                        SELECT code, name
+                        FROM stock_universe
+                        WHERE code IN ({placeholders})
+                          AND name IS NOT NULL
+                          AND name != ''
+                        """,
+                        missing_codes,
+                    ).fetchall()
+                    for row in rows:
+                        code_names.setdefault(str(row["code"]), str(row["name"]))
+    for pool in pools:
+        for row in pool["rows"]:
+            if not str(row.get("name") or "").strip():
+                row["name"] = code_names.get(row["code"], "")
+            metrics = code_metrics.get(row["code"], {})
+            for field in ("trade", "turnoverratio", "amount_yi", "mktcap_yi"):
+                if fnum(row.get(field)) <= 0 and field in metrics:
+                    row[field] = metrics[field]
+            if fnum(row.get("changepercent")) == 0 and fnum(row.get("trade")) > 0 and "changepercent" in metrics:
+                row["changepercent"] = metrics["changepercent"]
+            if not row.get("turnover_rank") and metrics.get("turnover_rank"):
+                row["turnover_rank"] = metrics["turnover_rank"]
 
 
 def merge_recommendations(pool_outputs: list[dict]) -> list[dict]:
@@ -1420,16 +1504,15 @@ def merge_recommendations(pool_outputs: list[dict]) -> list[dict]:
 
 def append_result_table(lines: list[str], rows: list[dict], *, combined: bool = False):
     if combined:
-        lines.append("| 档位 | 状态 | 排名 | 标的 | 代码 | 综合来源 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
+        lines.append("| 档位 | 状态 | 排名 | 股票名称 | 股票代码 | 综合来源 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
         lines.append("|---|---|---|---|---:|---|---|---|---|---|---|---|---|---:|---|---|")
     else:
-        lines.append("| 档位 | 状态 | 排名 | 标的 | 代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
+        lines.append("| 档位 | 状态 | 排名 | 股票名称 | 股票代码 | 方向/主线 | 关键数据 | 技术状态 | MACD/KDJ | 量价/资金 | 证据/逻辑 | 支撑/失效 | 评分 | 仓位比例 | 买点观察 |")
         lines.append("|---|---|---|---|---:|---|---|---|---|---|---|---|---:|---|---|")
     for row in rows:
         macd_kdj = f"{row['macd']}；{row['kdj']}，K={row['k']}/D={row['d']}/J={row['j']}"
         key_data = (
-            f"成交额{row['amount_yi']:.2f}亿，换手{row['turnoverratio']:.2f}%，"
-            f"涨跌幅{row['changepercent']:.2f}%，距20日线{row['dist20_pct']:.2f}%，"
+            f"{quote_summary_text(row)}，距20日线{row['dist20_pct']:.2f}%，"
             f"{row['ma20_state']}，K线{row['date']}"
         )
         vol = f"量比{row['vol_ratio']:.2f}；{rank_text(row)}"
@@ -1442,14 +1525,14 @@ def append_result_table(lines: list[str], rows: list[dict], *, combined: bool = 
         rank = rank_text(row)
         if combined:
             lines.append(
-                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {row['name']} | {row['code']} | "
+                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {display_name(row)} | {row['code']} | "
                 f"{row.get('combined_sources', row.get('source_title', ''))} | {row['theme']} | {key_data} | {tech} | "
                 f"{macd_kdj} | {vol} | {logic}；分源结果：{row.get('source_grades', '')} | {row['support']} | "
                 f"{score} | {row['position_plan']} | {buy_watch} |"
             )
         else:
             lines.append(
-                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {row['name']} | {row['code']} | "
+                f"| {row['tier']} | {row.get('state', row['tier'])} | {rank} | {display_name(row)} | {row['code']} | "
                 f"{row['theme']} | {key_data} | {tech} | {macd_kdj} | {vol} | {logic} | {row['support']} | "
                 f"{score} | {row['position_plan']} | {buy_watch} |"
             )
@@ -1486,8 +1569,8 @@ def append_commentary(lines: list[str], rows: list[dict], *, combined: bool = Fa
         if combined:
             source_text = f"综合来源为{row.get('combined_sources', row.get('source_title', ''))}，分源结果为{row.get('source_grades', '')}。"
         lines.append(
-            f"{row['name']}：{source_text}方向/主线为{row['theme']}，{rank_text(row)}，"
-            f"成交额{row['amount_yi']:.2f}亿、换手{row['turnoverratio']:.2f}%、距20日线{row['dist20_pct']:.2f}%。"
+            f"{display_name(row)}：{source_text}方向/主线为{row['theme']}，{rank_text(row)}，"
+            f"成交额{amount_text(row)}、换手{quote_pct_text(row, 'turnoverratio')}、距20日线{row['dist20_pct']:.2f}%。"
             f"趋势结构是{row['trend_state']}、{row['structure']}；MACD/KDJ为{row['macd']}、{row['kdj']}，只作辅助确认。"
             f"买点观察是{row['buy_watch']}；支撑/失效看{row['support']}。档位原因：{row['tier_reason']}。主要风险：{risk}。"
         )
@@ -1526,6 +1609,7 @@ def generate_multi_source_report(pool_outputs: list[dict], combined_rows: list[d
     theme_text = "、".join(f"{theme}({count})" for theme, count in top_themes) if top_themes else "无"
     latest_dates = Counter(row["date"] for row in all_valid)
     latest_date_text = "、".join(f"{day}:{count}只" for day, count in latest_dates.items()) if latest_dates else "无"
+    quote_missing_count = sum(1 for row in all_valid if quote_fields_missing(row))
     kline_label = kline_source_label()
 
     lines = []
@@ -1547,6 +1631,8 @@ def generate_multi_source_report(pool_outputs: list[dict], combined_rows: list[d
     lines.append("- 指标口径：5/10/20/30/60日均线、量比、20日线偏离、20日线企稳分层、MACD(12/26/9)、KDJ(9日RSV)、支撑/失效位、板块内成交前排/人气和右侧趋势评分。")
     lines.append("- 合并口径：同一股票在两个来源中去重，优先保留 A/B 档和高分结果；同时出现在成交额前200与热榜前100的标的给予综合确认加权，但不因为热度直接放宽过热、破位或失效条件。")
     lines.append(f"- 市场环境：候选主线集中在 {theme_text}。")
+    if quote_missing_count:
+        lines.append(f"- 限制说明：{quote_missing_count} 只候选缺少成交额/换手/涨跌幅快照，报告对应字段标为“未取得”，不按零值解释。")
     lines.append("")
 
     for pool in pool_outputs:
@@ -1635,6 +1721,7 @@ def main():
     )
     progress("fetching candidate pools")
     pools = read_candidate_pools()
+    fill_missing_candidate_names(pools)
     for pool in pools:
         if args.max_candidates:
             pool["rows"] = pool["rows"][: args.max_candidates]
@@ -1735,7 +1822,7 @@ def main():
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     for row in combined_rows[:25]:
-        print(row["tier"], row.get("composite_score", row["score"]), row["code"], row["name"], row["theme"], row["date"], row.get("combined_sources", ""))
+        print(row["tier"], row.get("composite_score", row["score"]), row["code"], display_name(row), row["theme"], row["date"], row.get("combined_sources", ""))
 
 if __name__ == "__main__":
     main()
