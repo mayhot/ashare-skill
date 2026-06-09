@@ -2,6 +2,13 @@
 
 ## 2026-06-09
 
+- skills: Updated `ashare-volume-doubled-uptrend` market-cap filtering to detect central-cache `total_mv` values stored in 10k-CNY units and normalize them to yuan before applying the default 20bn-yuan threshold.
+
+- skills: Updated `ashare-trend-buy` report tables so turnover, popularity, and combined result sections explicitly use `股票名称` and `股票代码` columns.
+- skills: Added compatibility migrations for `ashare-kline-sqlite-cache` turnover and popularity ranking tables so old SQLite caches gain `code` and `name` fields.
+- skills: Updated `ashare-kline-sqlite-cache` to migrate and maintain `stock_universe.total_mv`/`circ_mv` during official CSI universe syncs, preserving existing market values when snapshot sources are unavailable.
+- skills: Updated `ashare-trend-buy` to fill missing candidate names and market fields across ranking sources so heat-list reports do not emit blank stock names or zeroed quote metrics when same-code turnover data is available.
+- skills: Fixed `ashare-ai-slowbull` SQLite turnover-cache reads to recover Sina `mktcap` metadata from `raw_json` so market-cap scoring and reports do not show zero values.
 - skills: Changed `ashare-kline-sqlite-cache` popularity snapshots from top 200 to top 100, renamed the SQLite table to `popularity_top100`, and removed old `popularity_top200` compatibility.
 - skills: Updated market-data-consuming skills to prefer `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` for turnover/popularity rankings, stock universe, daily K-lines, and recommendation return prices before falling back to public APIs.
 - runs: Added the 2026-06-08 `ashare-volume-doubled-uptrend` run artifact.

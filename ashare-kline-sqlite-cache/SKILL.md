@@ -144,8 +144,8 @@ amplitude, pct_chg, change_amount, turnover,
 source, fetched_at, raw_line
 ```
 
-It also stores a latest market snapshot/universe table with fields such as latest price, percentage change, volume, amount, amplitude, high, low, open, previous close, volume ratio, turnover, PE, PB, total market value, circulating market value, speed, 5-minute change, 60-day change, YTD change, and raw JSON when available.
-Official CSI All Share universe fields include `board` (index name), `listing_date` (constituent file date), `industry`, `region`, and `official_source='CSI000985'` when available.
+It also stores a latest market snapshot/universe table with fields such as latest price, percentage change, volume, amount, amplitude, high, low, open, previous close, volume ratio, turnover, PE, PB, total market value (`total_mv`), circulating market value (`circ_mv`), speed, 5-minute change, 60-day change, YTD change, and raw JSON when available.
+Official CSI All Share universe fields include `board` (index name), `listing_date` (constituent file date), `industry`, `region`, and `official_source='CSI000985'` when available. Official-universe runs also refresh market snapshot fields from market-data sources so `total_mv` and `circ_mv` stay maintained in `stock_universe`; if the snapshot source is unavailable, existing market values are retained rather than replaced with empty values.
 
 The script stores two separate ranking tables by trade date. Both are fetched only for the requested day after the close and are not backfilled historically by default:
 
@@ -220,7 +220,7 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
 
 Use CSI All Share / 中证全指 (`000985`) constituents as the default full-market universe, but do not fetch them on every daily run. Refresh the official universe on the 1st day of each month, or when `--refresh-universe` is passed. On other days, use cached rows in `stock_universe` where `official_source='CSI000985'`.
 
-The script calls AkShare's `index_stock_cons_csindex(symbol="000985")` wrapper for the latest constituent file from CSI. The normalized rows keep the constituent index name in `board`, the constituent file date in `listing_date`, exchange inferred from CSI fields and code prefixes, and raw source content in `raw_json`. If a cached database lacks `CSI000985` rows, the next default official run should refresh the universe.
+The script calls AkShare's `index_stock_cons_csindex(symbol="000985")` wrapper for the latest constituent file from CSI. The normalized rows keep the constituent index name in `board`, the constituent file date in `listing_date`, exchange inferred from CSI fields and code prefixes, and raw source content in `raw_json`. Official and cached-official universe rows are enriched with market snapshot fields from AkShare, Eastmoney, or Sina, including `total_mv` and `circ_mv`. If a cached database lacks `CSI000985` rows, the next default official run should refresh the universe.
 
 ## SQLite Tables
 

@@ -47,6 +47,42 @@ EASTMONEY_LIST_FIELDS = [
     "f24",  # 60 day change
     "f25",  # YTD change
 ]
+STOCK_UNIVERSE_MARKET_COLUMNS = [
+    "latest_price",
+    "pct_chg",
+    "change_amount",
+    "volume",
+    "amount",
+    "amplitude",
+    "high",
+    "low",
+    "open",
+    "previous_close",
+    "volume_ratio",
+    "turnover",
+    "pe_dynamic",
+    "pb",
+    "total_mv",
+    "circ_mv",
+    "speed",
+    "five_minute_chg",
+    "sixty_day_chg",
+    "ytd_chg",
+]
+STOCK_UNIVERSE_COLUMNS = [
+    "code",
+    "name",
+    "exchange",
+    "secid",
+    "board",
+    "listing_date",
+    "industry",
+    "region",
+    "official_source",
+    *STOCK_UNIVERSE_MARKET_COLUMNS,
+    "raw_json",
+    "updated_at",
+]
 EASTMONEY_LIST_URL = (
     "http://push2.eastmoney.com/api/qt/clist/get?"
     "pn={page}&pz=100&po=1&np=1&fltt=2&invt=2&fid=f3&"
@@ -792,6 +828,61 @@ def fetch_stock_universe_sina(limit: int | None, timeout: int) -> list[dict[str,
                 return rows
         time.sleep(0.05)
     return rows
+
+
+def merge_stock_universe_market_snapshot(
+    rows: list[dict[str, Any]],
+    market_rows: list[dict[str, Any]],
+) -> int:
+    market_by_code = {row["code"]: row for row in market_rows if row.get("code")}
+    updated = 0
+    for row in rows:
+        market_row = market_by_code.get(row.get("code"))
+        if not market_row:
+            continue
+        changed = False
+        for col in STOCK_UNIVERSE_MARKET_COLUMNS:
+            value = market_row.get(col)
+            if value is None:
+                continue
+            if row.get(col) != value:
+                row[col] = value
+                changed = True
+        if changed:
+            updated += 1
+    return updated
+
+
+def maintain_stock_universe_market_snapshot(
+    rows: list[dict[str, Any]],
+    timeout: int,
+    prefer_akshare: bool,
+) -> tuple[int, str]:
+    if not rows:
+        return 0, "skipped-empty"
+    errors: list[str] = []
+    if prefer_akshare:
+        try:
+            market_rows = fetch_stock_universe_akshare(None)
+            if market_rows:
+                return merge_stock_universe_market_snapshot(rows, market_rows), "akshare.stock_zh_a_spot_em"
+        except Exception as exc:
+            errors.append(f"akshare:{exc}")
+    try:
+        market_rows = fetch_stock_universe_eastmoney(None, timeout)
+        if market_rows:
+            return merge_stock_universe_market_snapshot(rows, market_rows), "eastmoney.clist"
+    except Exception as exc:
+        errors.append(f"eastmoney:{exc}")
+    try:
+        market_rows = fetch_stock_universe_sina(None, timeout)
+        if market_rows:
+            return merge_stock_universe_market_snapshot(rows, market_rows), "sina.market_center"
+    except Exception as exc:
+        errors.append(f"sina:{exc}")
+    if errors:
+        return 0, "unavailable:" + "; ".join(errors)
+    return 0, "unavailable:empty"
 
 
 def fetch_kline_rows(
@@ -2007,6 +2098,27 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             "industry": "TEXT",
             "region": "TEXT",
             "official_source": "TEXT",
+            "latest_price": "REAL",
+            "pct_chg": "REAL",
+            "change_amount": "REAL",
+            "volume": "REAL",
+            "amount": "REAL",
+            "amplitude": "REAL",
+            "high": "REAL",
+            "low": "REAL",
+            "open": "REAL",
+            "previous_close": "REAL",
+            "volume_ratio": "REAL",
+            "turnover": "REAL",
+            "pe_dynamic": "REAL",
+            "pb": "REAL",
+            "total_mv": "REAL",
+            "circ_mv": "REAL",
+            "speed": "REAL",
+            "five_minute_chg": "REAL",
+            "sixty_day_chg": "REAL",
+            "ytd_chg": "REAL",
+            "raw_json": "TEXT",
         },
     )
     conn.execute(
@@ -2054,6 +2166,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    ensure_columns(
+        conn,
+        "popularity_top100",
+        {
+            "code": "TEXT",
+            "name": "TEXT",
+            "exchange": "TEXT",
+            "hot_value": "REAL",
+            "rank_change": "REAL",
+            "latest_price": "REAL",
+            "pct_chg": "REAL",
+            "source": "TEXT",
+            "fetched_at": "TEXT",
+            "raw_json": "TEXT",
+        },
+    )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_popularity_top100_code ON popularity_top100(code)")
     conn.execute("DELETE FROM popularity_top100 WHERE rank > ?", (DEFAULT_POPULARITY_LIMIT,))
     conn.execute(
@@ -2075,6 +2203,23 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (trade_date, rank)
         )
         """
+    )
+    ensure_columns(
+        conn,
+        "turnover_top200",
+        {
+            "code": "TEXT",
+            "name": "TEXT",
+            "exchange": "TEXT",
+            "amount": "REAL",
+            "volume": "REAL",
+            "turnover_ratio": "REAL",
+            "latest_price": "REAL",
+            "pct_chg": "REAL",
+            "source": "TEXT",
+            "fetched_at": "TEXT",
+            "raw_json": "TEXT",
+        },
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_turnover_top200_code ON turnover_top200(code)")
     conn.execute(
@@ -2169,41 +2314,17 @@ def finish_run(
 
 def upsert_stock_universe(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> None:
     updated_at = now_china().strftime("%Y-%m-%d %H:%M:%S%z")
-    columns = [
-        "code",
-        "name",
-        "exchange",
-        "secid",
-        "board",
-        "listing_date",
-        "industry",
-        "region",
-        "official_source",
-        "latest_price",
-        "pct_chg",
-        "change_amount",
-        "volume",
-        "amount",
-        "amplitude",
-        "high",
-        "low",
-        "open",
-        "previous_close",
-        "volume_ratio",
-        "turnover",
-        "pe_dynamic",
-        "pb",
-        "total_mv",
-        "circ_mv",
-        "speed",
-        "five_minute_chg",
-        "sixty_day_chg",
-        "ytd_chg",
-        "raw_json",
-        "updated_at",
-    ]
+    columns = STOCK_UNIVERSE_COLUMNS
     placeholders = ",".join("?" for _ in columns)
-    updates = ",".join(f"{col}=excluded.{col}" for col in columns if col != "code")
+    updates = ",".join(
+        (
+            f"{col}=excluded.{col}"
+            if col == "updated_at"
+            else f"{col}=COALESCE(excluded.{col}, stock_universe.{col})"
+        )
+        for col in columns
+        if col != "code"
+    )
     values = []
     for row in rows:
         values.append(tuple(row.get(col) if col != "updated_at" else updated_at for col in columns))
@@ -2356,10 +2477,8 @@ def kline_status_by_code(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
 
 def load_cached_official_universe(conn: sqlite3.Connection, limit: int | None) -> list[dict[str, Any]]:
     rows = conn.execute(
-        """
-        SELECT
-            code, name, exchange, secid, board, listing_date,
-            industry, region, official_source, raw_json
+        f"""
+        SELECT {",".join(STOCK_UNIVERSE_COLUMNS)}
         FROM stock_universe
         WHERE official_source = ?
         ORDER BY code
@@ -2367,20 +2486,12 @@ def load_cached_official_universe(conn: sqlite3.Connection, limit: int | None) -
         (CSINDEX_ALL_SHARE_SOURCE,),
     ).fetchall()
     result = [
-        {
-            "code": row[0],
-            "name": row[1],
-            "exchange": row[2],
-            "secid": row[3] or secid_for_code(row[0]),
-            "board": row[4],
-            "listing_date": row[5],
-            "industry": row[6],
-            "region": row[7],
-            "official_source": row[8],
-            "raw_json": row[9] or "{}",
-        }
+        dict(zip(STOCK_UNIVERSE_COLUMNS, row))
         for row in rows
     ]
+    for row in result:
+        row["secid"] = row.get("secid") or secid_for_code(row["code"])
+        row["raw_json"] = row.get("raw_json") or "{}"
     return result[:limit] if limit else result
 
 
@@ -2711,29 +2822,21 @@ def stock_rows_from_symbols_cached(conn: sqlite3.Connection, symbols: str) -> li
     placeholders = ",".join("?" for _ in codes)
     cached_rows = conn.execute(
         f"""
-        SELECT
-            code, name, exchange, secid, board, listing_date,
-            industry, region, official_source, raw_json
+        SELECT {",".join(STOCK_UNIVERSE_COLUMNS)}
         FROM stock_universe
         WHERE code IN ({placeholders})
         """,
         tuple(codes),
     ).fetchall()
-    cached_by_code = {
-        row[0]: {
-            "code": row[0],
-            "name": row[1] or row[0],
-            "exchange": row[2] or exchange_for_code(row[0]),
-            "secid": row[3] or secid_for_code(row[0]),
-            "board": row[4],
-            "listing_date": row[5],
-            "industry": row[6],
-            "region": row[7],
-            "official_source": row[8],
-            "raw_json": row[9] or "{}",
-        }
-        for row in cached_rows
-    }
+    cached_by_code = {}
+    for raw_row in cached_rows:
+        row = dict(zip(STOCK_UNIVERSE_COLUMNS, raw_row))
+        code = row["code"]
+        row["name"] = row.get("name") or code
+        row["exchange"] = row.get("exchange") or exchange_for_code(code)
+        row["secid"] = row.get("secid") or secid_for_code(code)
+        row["raw_json"] = row.get("raw_json") or "{}"
+        cached_by_code[code] = row
     return [cached_by_code.get(row["code"], row) for row in basic_rows]
 
 
@@ -2884,6 +2987,24 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             stocks = [row for row in stocks if row["code"] in wanted]
         if not stocks:
             raise SystemExit("No A-share symbols found from the selected universe source.")
+        universe_market_updates = 0
+        universe_market_source = "skipped"
+        if (
+            universe_source.startswith("official_csindex")
+            or universe_source.startswith("cached_official_universe")
+        ):
+            universe_market_updates, universe_market_source = maintain_stock_universe_market_snapshot(
+                stocks,
+                args.request_timeout,
+                args.prefer_akshare,
+            )
+            if universe_market_source.startswith("unavailable"):
+                log(f"universe market snapshot: {universe_market_source}")
+            else:
+                log(
+                    "universe market snapshot: "
+                    f"updated_rows={universe_market_updates} source={universe_market_source}"
+                )
         upsert_stock_universe(conn, stocks)
         universe_pruned = 0
         if actual_mode == "init" and (
@@ -3088,6 +3209,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             f"retention_applied={retention_applied}; "
             f"stock_universe_pruned={universe_pruned}; "
             f"seed_rows_imported={seed_rows_imported}; "
+            f"universe_market_updates={universe_market_updates}; "
+            f"universe_market_source={universe_market_source}; "
             f"popularity_count={popularity_count}; "
             f"popularity_source={popularity_source}; "
             f"turnover_count={turnover_count}; "
@@ -3131,6 +3254,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "mode": actual_mode,
             "stock_count": len(stocks),
             "stock_universe_pruned": universe_pruned,
+            "stock_universe_market_updates": universe_market_updates,
+            "stock_universe_market_source": universe_market_source,
             "rows_upserted": rows_upserted,
             "seed_rows_imported": seed_rows_imported,
             "network_fetch_symbols": len(fetch_jobs),
@@ -3462,26 +3587,84 @@ def self_test() -> None:
     with TemporaryDirectory() as tmp:
         db = Path(tmp) / "test.sqlite"
         with closing(sqlite3.connect(db)) as conn:
+            conn.execute(
+                """
+                CREATE TABLE popularity_top100 (
+                    trade_date TEXT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    PRIMARY KEY (trade_date, rank)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE turnover_top200 (
+                    trade_date TEXT NOT NULL,
+                    rank INTEGER NOT NULL,
+                    PRIMARY KEY (trade_date, rank)
+                )
+                """
+            )
             ensure_schema(conn)
+            popularity_columns = {row[1] for row in conn.execute("PRAGMA table_info(popularity_top100)")}
+            turnover_columns = {row[1] for row in conn.execute("PRAGMA table_info(turnover_top200)")}
+            assert {"code", "name"}.issubset(popularity_columns)
+            assert {"code", "name"}.issubset(turnover_columns)
             stocks = [
                 {
                     "code": "000001",
                     "name": "sample",
                     "exchange": "SZ",
                     "secid": "0.000001",
+                    "total_mv": 1000000.0,
+                    "circ_mv": 800000.0,
                     "raw_json": "{}",
                 }
             ]
             upsert_stock_universe(conn, stocks)
+            upsert_stock_universe(
+                conn,
+                [
+                    {
+                        "code": "000001",
+                        "name": "sample",
+                        "exchange": "SZ",
+                        "secid": "0.000001",
+                        "raw_json": "{}",
+                    }
+                ],
+            )
+            retained_mv = conn.execute(
+                "SELECT total_mv, circ_mv FROM stock_universe WHERE code='000001'"
+            ).fetchone()
+            assert retained_mv == (1000000.0, 800000.0)
             cached_symbols = stock_rows_from_symbols_cached(conn, "000001,000004")
             assert cached_symbols[0]["name"] == "sample"
+            assert cached_symbols[0]["total_mv"] == 1000000.0
+            assert cached_symbols[0]["circ_mv"] == 800000.0
             assert cached_symbols[0]["raw_json"] == "{}"
             assert cached_symbols[1]["code"] == "000004"
             assert has_complete_cached_official_universe(conn) is False
+            assert merge_stock_universe_market_snapshot(
+                parsed_csindex,
+                [
+                    {
+                        "code": "600000",
+                        "latest_price": 11.0,
+                        "total_mv": 2000000.0,
+                        "circ_mv": 1500000.0,
+                    }
+                ],
+            ) == 1
+            assert parsed_csindex[0]["total_mv"] == 2000000.0
+            assert parsed_csindex[0]["circ_mv"] == 1500000.0
             upsert_stock_universe(conn, parsed_csindex)
             cached_official = load_cached_official_universe(conn, None)
             assert len(cached_official) == 2
             assert cached_official[0]["official_source"] == CSINDEX_ALL_SHARE_SOURCE
+            cached_official_by_code = {row["code"]: row for row in cached_official}
+            assert cached_official_by_code["600000"]["total_mv"] == 2000000.0
+            assert cached_official_by_code["600000"]["circ_mv"] == 1500000.0
             official_counts = cached_official_universe_counts(conn)
             assert official_counts[CSINDEX_ALL_SHARE_SOURCE] == 2
             assert official_counts["SH"] == 1
