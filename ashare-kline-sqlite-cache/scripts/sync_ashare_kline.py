@@ -1,5 +1,6 @@
 import argparse
 import csv
+import io
 import json
 import random
 import sqlite3
@@ -61,13 +62,24 @@ SINA_LIST_URL = (
     "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/"
     "Market_Center.getHQNodeData?page={page}&num=80&sort=amount&asc=0&node=hs_a&symbol=&_s_r_a=page"
 )
+SINA_KLINE_URLS = [
+    "https://quotes.sina.cn/cn/api/json_v2.php/"
+    "CN_MarketDataService.getKLineData?symbol={symbol}&scale=240&ma=no&datalen={datalen}",
+    "http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/"
+    "CN_MarketData.getKLineData?symbol={symbol}&scale=240&ma=no&datalen={datalen}",
+]
 TENCENT_KLINE_URL = "http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={param}"
+NETEASE_KLINE_URL = (
+    "http://quotes.money.163.com/service/chddata.html?"
+    "code={symbol}&start={begin}&end={end}&"
+    "fields=TCLOSE;HIGH;LOW;TOPEN;LCLOSE;CHG;PCHG;VOTURNOVER;VATURNOVER;TURNOVER"
+)
 EASTMONEY_POPULARITY_URLS = [
     "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
     "http://emappdata.eastmoney.com/stockrank/getAllCurrentList",
 ]
 ADJUST_FLAGS = {"none": "0", "qfq": "1", "hfq": "2"}
-DEFAULT_KLINE_SOURCES = ["tencent", "eastmoney"]
+DEFAULT_KLINE_SOURCES = ["tencent", "eastmoney", "sina", "netease", "akshare"]
 DEFAULT_POPULARITY_SOURCES = ["eastmoney", "akshare"]
 REQUEST_THROTTLE_LOCK = threading.Lock()
 NEXT_REQUEST_AT = 0.0
@@ -126,6 +138,58 @@ def format_average_seconds(totals: dict[str, float], counts: dict[str, int]) -> 
         if count:
             values.append(f"{key}:{total / count:.2f}s")
     return ",".join(values) if values else "none"
+
+
+class SourceCircuitBreaker:
+    def __init__(self, threshold: int) -> None:
+        self.threshold = max(0, int(threshold or 0))
+        self.failures: dict[str, int] = {}
+        self.failure_streaks: dict[str, int] = {}
+        self.disabled: set[str] = set()
+        self.lock = threading.Lock()
+
+    def allow(self, source: str) -> bool:
+        if self.threshold <= 0:
+            return True
+        with self.lock:
+            return source not in self.disabled
+
+    def record_failure(self, source: str, exc: Exception) -> bool:
+        if self.threshold <= 0:
+            return False
+        should_log = False
+        with self.lock:
+            if source in self.disabled:
+                return True
+            failures = self.failures.get(source, 0) + 1
+            streak = self.failure_streaks.get(source, 0) + 1
+            self.failures[source] = failures
+            self.failure_streaks[source] = streak
+            if streak >= self.threshold:
+                self.disabled.add(source)
+                should_log = True
+        if should_log:
+            log(
+                "kline source disabled: "
+                f"source={source} consecutive_failures={streak} total_failures={failures} "
+                f"threshold={self.threshold} last_error={str(exc)[:160]}"
+            )
+        return should_log
+
+    def record_success(self, source: str) -> None:
+        if self.threshold <= 0:
+            return
+        with self.lock:
+            self.failure_streaks[source] = 0
+
+    def snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "threshold": self.threshold,
+                "failures": dict(self.failures),
+                "failure_streaks": dict(self.failure_streaks),
+                "disabled": sorted(self.disabled),
+            }
 
 
 def parse_sources(value: str, default: list[str], allowed: set[str]) -> list[str]:
@@ -204,6 +268,16 @@ def qq_symbol_for_code(code: str) -> str:
     return f"sz{code}"
 
 
+def netease_symbol_for_code(code: str) -> str:
+    code = normalize_code(code)
+    exchange = exchange_for_code(code)
+    if exchange == "SH":
+        return f"0{code}"
+    if exchange == "SZ":
+        return f"1{code}"
+    return f"2{code}"
+
+
 def to_float(value: Any) -> float | None:
     if value in (None, "", "-", "--"):
         return None
@@ -221,6 +295,8 @@ def request_json(
     retry_max_sleep: float = 8.0,
     request_delay: float = 0.0,
     request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
+    source_name: str | None = None,
 ) -> dict[str, Any]:
     headers = {
         "User-Agent": "Mozilla/5.0",
@@ -230,13 +306,69 @@ def request_json(
     last_error: Exception | None = None
     total_attempts = max(1, int(attempts or 1))
     for attempt in range(total_attempts):
+        if source_breaker and source_name and not source_breaker.allow(source_name):
+            raise RuntimeError(f"{source_name} disabled after repeated request failures")
         try:
             throttle_public_request(request_delay, request_jitter)
             req = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                payload = json.loads(resp.read().decode("utf-8"))
+                if source_breaker and source_name:
+                    source_breaker.record_success(source_name)
+                return payload
         except Exception as exc:
             last_error = exc
+            disabled = False
+            if source_breaker and source_name:
+                disabled = source_breaker.record_failure(source_name, exc)
+            if disabled:
+                break
+            if attempt < total_attempts - 1:
+                time.sleep(retry_sleep_seconds(attempt, retry_base_sleep, retry_max_sleep))
+    raise last_error or RuntimeError("request failed")
+
+
+def request_text(
+    url: str,
+    timeout: int,
+    attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
+    source_name: str | None = None,
+    encoding: str = "utf-8",
+) -> str:
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json,text/plain,*/*",
+        "Referer": "https://quote.eastmoney.com/",
+    }
+    last_error: Exception | None = None
+    total_attempts = max(1, int(attempts or 1))
+    for attempt in range(total_attempts):
+        if source_breaker and source_name and not source_breaker.allow(source_name):
+            raise RuntimeError(f"{source_name} disabled after repeated request failures")
+        try:
+            throttle_public_request(request_delay, request_jitter)
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = resp.read()
+                try:
+                    text = data.decode(encoding)
+                except UnicodeDecodeError:
+                    text = data.decode("gb18030", errors="replace")
+                if source_breaker and source_name:
+                    source_breaker.record_success(source_name)
+                return text
+        except Exception as exc:
+            last_error = exc
+            disabled = False
+            if source_breaker and source_name:
+                disabled = source_breaker.record_failure(source_name, exc)
+            if disabled:
+                break
             if attempt < total_attempts - 1:
                 time.sleep(retry_sleep_seconds(attempt, retry_base_sleep, retry_max_sleep))
     raise last_error or RuntimeError("request failed")
@@ -589,10 +721,14 @@ def fetch_kline_rows(
     retry_max_sleep: float,
     request_delay: float,
     request_jitter: float,
+    source_breaker: SourceCircuitBreaker | None = None,
 ) -> tuple[str, list[dict[str, Any]], str, float]:
     errors: list[str] = []
     last_code = stock["code"]
     for source in sources:
+        if source_breaker and not source_breaker.allow(source):
+            errors.append(f"{source}: disabled after repeated request failures")
+            continue
         source_started = time.time()
         try:
             if source == "eastmoney":
@@ -607,6 +743,7 @@ def fetch_kline_rows(
                     retry_max_sleep,
                     request_delay,
                     request_jitter,
+                    source_breaker,
                 )
             elif source == "tencent":
                 code, rows = fetch_tencent_kline_rows(
@@ -620,6 +757,42 @@ def fetch_kline_rows(
                     retry_max_sleep,
                     request_delay,
                     request_jitter,
+                    source_breaker,
+                )
+            elif source == "netease":
+                code, rows = fetch_netease_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                    timeout,
+                    request_attempts,
+                    retry_base_sleep,
+                    retry_max_sleep,
+                    request_delay,
+                    request_jitter,
+                    source_breaker,
+                )
+            elif source == "sina":
+                code, rows = fetch_sina_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                    timeout,
+                    request_attempts,
+                    retry_base_sleep,
+                    retry_max_sleep,
+                    request_delay,
+                    request_jitter,
+                    source_breaker,
+                )
+            elif source == "akshare":
+                code, rows = fetch_akshare_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
                 )
             else:
                 raise RuntimeError(f"unsupported kline source: {source}")
@@ -628,6 +801,8 @@ def fetch_kline_rows(
                 return code, rows, source, time.time() - source_started
             errors.append(f"{source}: empty")
         except Exception as exc:
+            if source in ("akshare", "sina") and source_breaker:
+                source_breaker.record_failure(source, exc)
             errors.append(f"{source}: {exc}")
     raise RuntimeError("; ".join(errors) or "all kline sources failed")
 
@@ -643,6 +818,7 @@ def fetch_eastmoney_kline_rows(
     retry_max_sleep: float = 8.0,
     request_delay: float = 0.0,
     request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     code = stock["code"]
     url = EASTMONEY_KLINE_URL.format(
@@ -659,6 +835,8 @@ def fetch_eastmoney_kline_rows(
         retry_max_sleep,
         request_delay,
         request_jitter,
+        source_breaker,
+        "eastmoney",
     )
     data = payload.get("data") or {}
     klines = data.get("klines") or []
@@ -702,6 +880,7 @@ def fetch_tencent_kline_rows(
     retry_max_sleep: float = 8.0,
     request_delay: float = 0.0,
     request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     code = stock["code"]
     symbol = qq_symbol_for_code(code)
@@ -724,6 +903,8 @@ def fetch_tencent_kline_rows(
             retry_max_sleep,
             request_delay,
             request_jitter,
+            source_breaker,
+            "tencent",
         )
         stock_data = ((payload.get("data") or {}).get(symbol) or {})
         key = f"{candidate}day" if candidate != "none" else "day"
@@ -757,6 +938,208 @@ def fetch_tencent_kline_rows(
                 "source": f"tencent.fqkline.adjust={actual_adjust}",
                 "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
                 "raw_line": json.dumps(item, ensure_ascii=False),
+            }
+        )
+    return code, rows
+
+
+def fetch_netease_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+    timeout: int,
+    request_attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    if adjust != "none":
+        return stock["code"], []
+    code = stock["code"]
+    text = request_text(
+        NETEASE_KLINE_URL.format(symbol=netease_symbol_for_code(code), begin=begin, end=end),
+        timeout,
+        request_attempts,
+        retry_base_sleep,
+        retry_max_sleep,
+        request_delay,
+        request_jitter,
+        source_breaker,
+        "netease",
+        "gb18030",
+    )
+    return code, parse_netease_kline_csv(stock, text)
+
+
+def parse_netease_kline_csv(stock: dict[str, Any], text: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    code = stock["code"]
+    reader = csv.reader(io.StringIO(text))
+    next(reader, None)
+    for parts in reader:
+        if len(parts) < 13:
+            continue
+        trade_date = str(parts[0]).strip()
+        if not trade_date or trade_date.lower() == "none":
+            continue
+        close = to_float(parts[3])
+        open_price = to_float(parts[6])
+        high = to_float(parts[4])
+        low = to_float(parts[5])
+        if close is None and open_price is None and high is None and low is None:
+            continue
+        rows.append(
+            {
+                "code": code,
+                "trade_date": trade_date,
+                "name": stock.get("name") or str(parts[2]).strip(),
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": open_price,
+                "close": close,
+                "high": high,
+                "low": low,
+                "volume": to_float(parts[10]),
+                "amount": to_float(parts[11]),
+                "amplitude": None,
+                "pct_chg": to_float(parts[9]),
+                "change_amount": to_float(parts[8]),
+                "turnover": to_float(parts[12]),
+                "source": "netease.chddata.adjust=none",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": ",".join(parts),
+            }
+        )
+    return sorted(rows, key=lambda item: item["trade_date"])
+
+
+def fetch_sina_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+    timeout: int,
+    request_attempts: int = 3,
+    retry_base_sleep: float = 0.5,
+    retry_max_sleep: float = 8.0,
+    request_delay: float = 0.0,
+    request_jitter: float = 0.0,
+    source_breaker: SourceCircuitBreaker | None = None,
+) -> tuple[str, list[dict[str, Any]]]:
+    if adjust != "none":
+        return stock["code"], []
+
+    code = stock["code"]
+    begin_date = f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+    end_date = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    begin_dt = datetime.strptime(begin_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    datalen = max(30, min(1200, int((end_dt - begin_dt).days * 1.8) + 30))
+    data: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for url_template in SINA_KLINE_URLS:
+        try:
+            payload = request_json(
+                url_template.format(symbol=qq_symbol_for_code(code), datalen=datalen),
+                timeout,
+                request_attempts,
+                retry_base_sleep,
+                retry_max_sleep,
+                request_delay,
+                request_jitter,
+                source_breaker,
+                "sina",
+            )
+            if isinstance(payload, list):
+                data = payload
+            if data:
+                break
+            errors.append("empty")
+        except Exception as exc:
+            errors.append(str(exc))
+    if not data:
+        if errors:
+            raise RuntimeError("; ".join(errors))
+        return code, []
+    rows: list[dict[str, Any]] = []
+    for raw in data:
+        trade_date = value_by_alias(raw, ["day", "date", "日期"], 0)
+        trade_date = str(trade_date)[:10]
+        if trade_date < begin_date or trade_date > end_date:
+            continue
+        rows.append(
+            {
+                "code": code,
+                "trade_date": trade_date,
+                "name": stock.get("name") or "",
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": to_float(value_by_alias(raw, ["open", "开盘"], 1)),
+                "close": to_float(value_by_alias(raw, ["close", "收盘"], 4)),
+                "high": to_float(value_by_alias(raw, ["high", "最高"], 2)),
+                "low": to_float(value_by_alias(raw, ["low", "最低"], 3)),
+                "volume": to_float(value_by_alias(raw, ["volume", "成交量"], 5)),
+                "amount": to_float(value_by_alias(raw, ["amount", "成交额"], 6)),
+                "amplitude": None,
+                "pct_chg": None,
+                "change_amount": None,
+                "turnover": to_float(value_by_alias(raw, ["turnover", "换手率"], 8)),
+                "source": "sina.stock_zh_a_daily.adjust=none",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": json.dumps(raw, ensure_ascii=False, default=str),
+            }
+        )
+    return code, [row for row in rows if row["trade_date"]]
+
+
+def value_by_alias(raw: dict[str, Any], aliases: list[str], fallback_index: int) -> Any:
+    for alias in aliases:
+        if alias in raw:
+            return raw.get(alias)
+    values = list(raw.values())
+    if fallback_index < len(values):
+        return values[fallback_index]
+    return None
+
+
+def fetch_akshare_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    import akshare as ak  # type: ignore
+
+    code = stock["code"]
+    ak_adjust = "" if adjust == "none" else adjust
+    df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=begin, end_date=end, adjust=ak_adjust)
+    if df is None or df.empty:
+        return code, []
+    rows: list[dict[str, Any]] = []
+    for raw in df.to_dict("records"):
+        values = list(raw.values())
+        if len(values) < 12:
+            continue
+        rows.append(
+            {
+                "code": code,
+                "trade_date": str(values[0])[:10],
+                "name": stock.get("name") or "",
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": to_float(values[2]),
+                "close": to_float(values[3]),
+                "high": to_float(values[4]),
+                "low": to_float(values[5]),
+                "volume": to_float(values[6]),
+                "amount": to_float(values[7]),
+                "amplitude": to_float(values[8]),
+                "pct_chg": to_float(values[9]),
+                "change_amount": to_float(values[10]),
+                "turnover": to_float(values[11]),
+                "source": f"akshare.stock_zh_a_hist.adjust={adjust}",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": json.dumps(raw, ensure_ascii=False, default=str),
             }
         )
     return code, rows
@@ -1879,13 +2262,15 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
         completed = 0
         started = time.time()
-        kline_sources = parse_sources(args.kline_sources, DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent"})
+        kline_sources = parse_sources(args.kline_sources, DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent", "sina", "netease", "akshare"})
+        source_breaker = SourceCircuitBreaker(args.source_fail_threshold)
         log(f"kline sources: order={','.join(kline_sources)}")
         log(
             "network policy: "
             f"workers={args.max_workers} attempts={args.request_attempts} "
             f"retry_base={args.retry_base_sleep}s retry_max={args.retry_max_sleep}s "
-            f"request_delay={args.request_delay}s request_jitter={args.request_jitter}s"
+            f"request_delay={args.request_delay}s request_jitter={args.request_jitter}s "
+            f"source_fail_threshold={args.source_fail_threshold}"
         )
         fetch_jobs = build_fetch_jobs(conn, stocks, begin, end, args, seed_rows_imported)
         log(f"network kline: scheduled_symbols={len(fetch_jobs)} workers={args.max_workers}")
@@ -1912,6 +2297,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     args.retry_max_sleep,
                     args.request_delay,
                     args.request_jitter,
+                    source_breaker,
                 ): stock
                 for stock, job_begin, job_end in fetch_jobs
             }
@@ -1957,6 +2343,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                         f"elapsed={format_duration(elapsed)} "
                         f"avg_source_latency={format_average_seconds(source_elapsed, source_counts)}"
                     )
+                    disabled_sources = source_breaker.snapshot()["disabled"]
+                    if disabled_sources:
+                        message += f" disabled_sources={','.join(disabled_sources)}"
                     if last_error:
                         message += f" last_error={last_error[:120]}"
                     log(message)
@@ -1978,6 +2367,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             f"retry_max_sleep={args.retry_max_sleep}; "
             f"request_delay={args.request_delay}; "
             f"request_jitter={args.request_jitter}; "
+            f"source_fail_threshold={args.source_fail_threshold}; "
+            f"kline_source_breaker={json.dumps(source_breaker.snapshot(), ensure_ascii=False)}; "
             f"kline_source_counts={format_count_map(source_counts)}; "
             f"kline_fallback_symbols={fallback_symbols}"
         )
@@ -2014,6 +2405,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "request_attempts": args.request_attempts,
             "request_delay": args.request_delay,
             "request_jitter": args.request_jitter,
+            "source_fail_threshold": args.source_fail_threshold,
+            "kline_source_breaker": source_breaker.snapshot(),
             "kline_source_counts": source_counts,
             "kline_fallback_symbols": fallback_symbols,
             "popularity_count": popularity_count,
@@ -2143,6 +2536,28 @@ def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def self_test() -> None:
+    breaker = SourceCircuitBreaker(3)
+    assert breaker.allow("eastmoney") is True
+    assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is False
+    assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is False
+    breaker.record_success("eastmoney")
+    assert breaker.allow("eastmoney") is True
+    assert breaker.snapshot()["failure_streaks"]["eastmoney"] == 0
+    assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is False
+    assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is False
+    assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is True
+    assert breaker.allow("eastmoney") is False
+    assert parse_sources("auto", DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent", "sina", "netease", "akshare"}) == DEFAULT_KLINE_SOURCES
+    assert value_by_alias({"date": "2026-06-05"}, ["date"], 0) == "2026-06-05"
+    assert value_by_alias({"日期": "2026-06-05"}, ["date", "日期"], 0) == "2026-06-05"
+    sample_csv = (
+        "date,code,name,close,high,low,open,preclose,change,pct,volume,amount,turnover\n"
+        "2026-06-05,'000001,Sample,12.34,12.50,12.00,12.10,12.00,0.34,2.83,1000,123400,1.20\n"
+    )
+    parsed = parse_netease_kline_csv({"code": "000001", "name": "Sample", "exchange": "SZ"}, sample_csv)
+    assert len(parsed) == 1
+    assert parsed[0]["trade_date"] == "2026-06-05"
+    assert parsed[0]["source"] == "netease.chddata.adjust=none"
     with TemporaryDirectory() as tmp:
         db = Path(tmp) / "test.sqlite"
         with closing(sqlite3.connect(db)) as conn:
@@ -2299,7 +2714,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", default=now_china().date().isoformat())
     parser.add_argument("--mode", choices=["auto", "init", "daily"], default="auto")
     parser.add_argument("--adjust", choices=sorted(ADJUST_FLAGS), default="none")
-    parser.add_argument("--kline-sources", default="auto", help="comma-separated K-line source order: auto, tencent,eastmoney")
+    parser.add_argument("--kline-sources", default="auto", help="comma-separated K-line source order: auto, tencent,eastmoney,sina,netease,akshare")
     parser.add_argument("--retain-trading-days", type=int, default=126)
     parser.add_argument("--initial-lookback-days", type=int, default=240)
     parser.add_argument("--incremental-lookback-days", type=int, default=12)
@@ -2310,6 +2725,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--request-attempts", type=int, default=4, help="HTTP attempts per public endpoint request")
     parser.add_argument("--retry-base-sleep", type=float, default=0.8, help="base seconds for exponential retry backoff")
     parser.add_argument("--retry-max-sleep", type=float, default=10.0, help="maximum seconds for exponential retry backoff")
+    parser.add_argument("--source-fail-threshold", type=int, default=3, help="disable a K-line source for the rest of the run after this many request failures; 0 disables source circuit breaking")
     parser.add_argument("--request-delay", type=float, default=0.12, help="minimum shared delay between public endpoint requests")
     parser.add_argument("--request-jitter", type=float, default=0.18, help="extra random shared delay between public endpoint requests")
     parser.add_argument("--prefer-akshare", action="store_true", help="try akshare.stock_zh_a_spot_em before built-in endpoints")

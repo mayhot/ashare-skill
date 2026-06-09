@@ -2,6 +2,8 @@
 
 ## 2026-06-08
 
+- runs: Added the 2026-06-08 `ashare-ai-slowbull` and `ashare-trend-buy` run artifacts.
+- skills: Added K-line source circuit breaking to `ashare-kline-sqlite-cache` so repeatedly failing market-data sources are skipped for the rest of a run, and expanded fallback sources to Tencent, Eastmoney, Sina, NetEase, and AkShare.
 - skills: Added `ashare-kline-sqlite-cache --repair-missing` to repair per-date K-line gaps in bounded `--symbols-only` batches while preserving existing popularity snapshots.
 - skills: Added K-line coverage, missing-prefix, popularity-count, unfinished-run, and SQLite writability preflight checks to the K-line cache repair workflow.
 - skills: Updated `ashare-kline-sqlite-cache` documentation with the failed-run repair playbook and validation expectations.
