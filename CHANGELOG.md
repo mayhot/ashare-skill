@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-06-09
+
+- runs: Added the 2026-06-08 `ashare-volume-doubled-uptrend` run artifact.
+- skills: Added TickFlow as a default `ashare-kline-sqlite-cache` K-line fallback source using free historical daily K-lines, including Beijing exchange symbol support.
+- skills: Added `ashare-kline-sqlite-cache/scripts/repair_missing_kline_grid.py` to query `stock_universe x daily_kline.trade_date` gaps and optionally backfill exact missing K-line cells.
+- skills: Changed `ashare-kline-sqlite-cache` default `stock_universe` official source from SSE/SZSE/BSE exchange lists to CSI All Share / 中证全指 (`000985`) constituents tagged as `CSI000985`.
+- skills: Added BaoStock as a default `ashare-kline-sqlite-cache` K-line fallback source and optional token-backed Tushare Pro daily K-line support.
+- skills: Added `ashare-kline-sqlite-cache --kline-source-strategy rotate|fallback` so full-market K-line syncs can distribute first-source requests across vendors while preserving per-symbol fallback coverage.
+- skills: Added mootdx/TDX TCP daily K-line support to `ashare-kline-sqlite-cache` as a default rotated source for unadjusted K-line fetches.
+- skills: Changed `ashare-kline-sqlite-cache` popularity snapshots to fetch the post-close top 200 by default and store them in `popularity_top200`.
+- skills: Updated `ashare-kline-sqlite-cache` documentation with the expanded K-line source order and Tushare token usage notes.
+
 ## 2026-06-08
 
 - runs: Added the 2026-06-08 `ashare-ai-slowbull` and `ashare-trend-buy` run artifacts.

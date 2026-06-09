@@ -2,6 +2,7 @@ import argparse
 import csv
 import io
 import json
+import os
 import random
 import sqlite3
 import sys
@@ -9,7 +10,7 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -79,9 +80,27 @@ EASTMONEY_POPULARITY_URLS = [
     "http://emappdata.eastmoney.com/stockrank/getAllCurrentList",
 ]
 ADJUST_FLAGS = {"none": "0", "qfq": "1", "hfq": "2"}
-DEFAULT_KLINE_SOURCES = ["tencent", "eastmoney", "sina", "netease", "akshare"]
+DEFAULT_KLINE_SOURCES = ["tencent", "mootdx", "eastmoney", "tickflow", "baostock", "sina", "netease", "akshare"]
+KLINE_SOURCE_SET = {
+    "eastmoney",
+    "tencent",
+    "mootdx",
+    "tickflow",
+    "baostock",
+    "sina",
+    "netease",
+    "akshare",
+    "tushare",
+}
+ROTATE_PRIMARY_AVOID_SOURCES = {"baostock"}
 DEFAULT_POPULARITY_SOURCES = ["eastmoney", "akshare"]
+DEFAULT_POPULARITY_LIMIT = 200
+CSINDEX_ALL_SHARE_CODE = "000985"
+CSINDEX_ALL_SHARE_SOURCE = f"CSI{CSINDEX_ALL_SHARE_CODE}"
 REQUEST_THROTTLE_LOCK = threading.Lock()
+BAOSTOCK_LOCK = threading.Lock()
+MOOTDX_TLS = threading.local()
+TICKFLOW_TLS = threading.local()
 NEXT_REQUEST_AT = 0.0
 
 
@@ -209,6 +228,27 @@ def parse_sources(value: str, default: list[str], allowed: set[str]) -> list[str
     return deduped
 
 
+def rotated_sources_for_code(
+    code: str,
+    sources: list[str],
+    strategy: str,
+    avoid_primary: set[str] | None = None,
+) -> list[str]:
+    if strategy != "rotate" or len(sources) <= 1:
+        return list(sources)
+    avoid_primary = avoid_primary or set()
+    primary_candidates = [source for source in sources if source not in avoid_primary]
+    if not primary_candidates:
+        return list(sources)
+    if len(primary_candidates) == 1:
+        primary = primary_candidates[0]
+        return [primary] + [source for source in sources if source != primary]
+    normalized = normalize_code(code)
+    bucket = int(normalized or "0") % len(primary_candidates)
+    rotated_primary = primary_candidates[bucket:] + primary_candidates[:bucket]
+    return rotated_primary + [source for source in sources if source not in rotated_primary]
+
+
 def throttle_public_request(request_delay: float, request_jitter: float) -> None:
     global NEXT_REQUEST_AT
     delay = max(0.0, float(request_delay or 0.0))
@@ -244,10 +284,10 @@ def normalize_code(value: Any) -> str:
 
 def exchange_for_code(code: str) -> str:
     code = normalize_code(code)
-    if code.startswith(("6", "9")):
-        return "SH"
     if code.startswith(("4", "8", "920")):
         return "BJ"
+    if code.startswith(("6", "9")):
+        return "SH"
     return "SZ"
 
 
@@ -278,6 +318,54 @@ def netease_symbol_for_code(code: str) -> str:
     return f"2{code}"
 
 
+def baostock_symbol_for_code(code: str) -> str:
+    code = normalize_code(code)
+    exchange = exchange_for_code(code).lower()
+    return f"{exchange}.{code}"
+
+
+def tushare_ts_code_for_code(code: str) -> str:
+    code = normalize_code(code)
+    return f"{code}.{exchange_for_code(code)}"
+
+
+def tickflow_symbol_for_code(code: str) -> str:
+    code = normalize_code(code)
+    return f"{code}.{exchange_for_code(code)}"
+
+
+def mootdx_market_for_code(code: str) -> int:
+    exchange = exchange_for_code(code)
+    return 1 if exchange == "SH" else 0
+
+
+def mootdx_client() -> Any:
+    client = getattr(MOOTDX_TLS, "client", None)
+    if client is not None:
+        return client
+    from mootdx.quotes import Quotes  # type: ignore
+
+    try:
+        client = Quotes.factory(market="std", multithread=True, heartbeat=True)
+    except TypeError:
+        client = Quotes.factory(market="std")
+    MOOTDX_TLS.client = client
+    return client
+
+
+def tickflow_client() -> Any:
+    client = getattr(TICKFLOW_TLS, "client", None)
+    if client is not None:
+        return client
+    from tickflow import TickFlow  # type: ignore
+
+    token = os.environ.get("TICKFLOW_API_KEY")
+    with redirect_stdout(io.StringIO()):
+        client = TickFlow(api_key=token) if token else TickFlow.free()
+    TICKFLOW_TLS.client = client
+    return client
+
+
 def to_float(value: Any) -> float | None:
     if value in (None, "", "-", "--"):
         return None
@@ -285,6 +373,18 @@ def to_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def computed_amplitude(high: float | None, low: float | None, preclose: float | None) -> float | None:
+    if high is None or low is None or not preclose:
+        return None
+    return round((high - low) / preclose * 100, 6)
+
+
+def computed_change_amount(close: float | None, preclose: float | None) -> float | None:
+    if close is None or preclose is None:
+        return None
+    return round(close - preclose, 6)
 
 
 def request_json(
@@ -416,11 +516,11 @@ def fetch_stock_universe(
         try:
             rows = fetch_stock_universe_official(limit)
             if rows:
-                return rows, "official_exchanges:akshare_wrapped"
+                return rows, f"official_csindex:{CSINDEX_ALL_SHARE_CODE}:akshare.index_stock_cons_csindex"
         except Exception as exc:
             if universe_source == "official":
                 raise
-            print(f"official exchange universe unavailable, falling back to market sources: {exc}")
+            print(f"official CSI all-share universe unavailable, falling back to market sources: {exc}")
     if universe_source == "seed":
         raise RuntimeError("--universe-source seed requires --seed-kline-csv and is handled before online fetch")
     if prefer_akshare:
@@ -444,60 +544,83 @@ def fetch_stock_universe_official(limit: int | None) -> list[dict[str, Any]]:
     import akshare as ak  # type: ignore
 
     started = time.time()
-    log("official universe: fetching SSE/SZSE/BSE stock lists")
-    rows: list[dict[str, Any]] = []
-    errors: list[str] = []
-    source_counts = {"SSE": 0, "SZSE": 0, "BSE": 0}
-
-    for indicator, board in [("主板A股", "SSE Main Board"), ("科创板", "STAR Market")]:
-        try:
-            df = call_with_retries(lambda: ak.stock_info_sh_name_code(indicator), f"SSE {indicator}")
-            normalized = normalize_official_rows(df.to_dict("records"), "SH", board, "SSE")
-            rows.extend(normalized)
-            source_counts["SSE"] += len(normalized)
-            log(f"official universe: SSE {indicator} rows={len(normalized)} total_sse={source_counts['SSE']}")
-        except Exception as exc:
-            errors.append(f"SSE {indicator}: {exc}")
-
-    try:
-        df = call_with_retries(lambda: ak.stock_info_sz_name_code("A股列表"), "SZSE A股列表")
-        normalized = normalize_official_rows(df.to_dict("records"), "SZ", "", "SZSE")
-        rows.extend(normalized)
-        source_counts["SZSE"] += len(normalized)
-        log(f"official universe: SZSE A-share rows={len(normalized)}")
-    except Exception as exc:
-        errors.append(f"SZSE A股列表: {exc}")
-
-    try:
-        df = call_with_retries(ak.stock_info_bj_name_code, "BSE stock list")
-        normalized = normalize_official_rows(df.to_dict("records"), "BJ", "BSE", "BSE")
-        rows.extend(normalized)
-        source_counts["BSE"] += len(normalized)
-        log(f"official universe: BSE rows={len(normalized)}")
-    except Exception as exc:
-        errors.append(f"BSE stock list: {exc}")
-
-    deduped: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        code = row["code"]
-        if not is_a_share_code(code, row.get("exchange", "")):
-            continue
-        deduped[code] = row
-
-    result = sorted(deduped.values(), key=lambda item: item["code"])
+    log(f"official universe: fetching CSI All Share constituents index={CSINDEX_ALL_SHARE_CODE}")
+    df = call_with_retries(
+        lambda: ak.index_stock_cons_csindex(symbol=CSINDEX_ALL_SHARE_CODE),
+        f"CSI All Share {CSINDEX_ALL_SHARE_CODE} constituents",
+    )
+    rows = normalize_csindex_constituent_rows(df.to_dict("records"))
+    if not rows:
+        raise RuntimeError(f"CSI All Share {CSINDEX_ALL_SHARE_CODE} constituents returned empty")
+    rows = sorted({row["code"]: row for row in rows}.values(), key=lambda item: item["code"])
     if limit:
-        result = result[:limit]
-    missing_sources = [source for source, count in source_counts.items() if count <= 0]
-    if missing_sources:
-        raise RuntimeError(
-            "official exchange universe incomplete; "
-            f"missing={','.join(missing_sources)}; "
-            f"counts={source_counts}; errors={'; '.join(errors)}"
+        rows = rows[:limit]
+    counts: dict[str, int] = {}
+    for row in rows:
+        exchange = str(row.get("exchange") or "")
+        counts[exchange] = counts.get(exchange, 0) + 1
+    log(
+        "official universe: "
+        f"CSI All Share rows={len(rows)} exchange_counts={counts} "
+        f"elapsed={format_duration(time.time() - started)}"
+    )
+    return rows
+
+
+def normalize_csindex_exchange(value: Any, code: str) -> str:
+    text = str(value or "").strip().upper()
+    if text in {"SH", "SSE", "上海", "上海证券交易所"}:
+        return "SH"
+    if text in {"SZ", "SZSE", "深圳", "深圳证券交易所"}:
+        return "SZ"
+    if text in {"BJ", "BSE", "北京", "北京证券交易所"}:
+        return "BJ"
+    if "SHANGHAI" in text:
+        return "SH"
+    if "SHENZHEN" in text:
+        return "SZ"
+    if "BEIJING" in text:
+        return "BJ"
+    return exchange_for_code(code)
+
+
+def normalize_csindex_constituent_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for raw in records:
+        code = normalize_code(
+            raw.get("成分券代码")
+            or raw.get("证券代码")
+            or raw.get("代码")
+            or raw.get("code")
         )
-    if not result:
-        raise RuntimeError("; ".join(errors) or "official exchange universe returned empty")
-    log(f"official universe: merged rows={len(result)} counts={source_counts} elapsed={format_duration(time.time() - started)}")
-    return result
+        if not code:
+            continue
+        exchange = normalize_csindex_exchange(raw.get("交易所") or raw.get("交易所英文名称"), code)
+        if not is_a_share_code(code, exchange):
+            continue
+        index_code = normalize_code(raw.get("指数代码") or CSINDEX_ALL_SHARE_CODE)
+        index_name = str(raw.get("指数名称") or "中证全指").strip()
+        name = (
+            raw.get("成分券名称")
+            or raw.get("证券简称")
+            or raw.get("名称")
+            or ""
+        )
+        rows.append(
+            {
+                "code": code,
+                "name": str(name).strip(),
+                "exchange": exchange,
+                "secid": secid_for_code(code),
+                "board": index_name,
+                "listing_date": str(raw.get("日期") or "").strip(),
+                "industry": "",
+                "region": "",
+                "official_source": f"CSI{index_code or CSINDEX_ALL_SHARE_CODE}",
+                "raw_json": json.dumps(raw, ensure_ascii=False, default=str),
+            }
+        )
+    return rows
 
 
 def call_with_retries(fn: Any, label: str, attempts: int = 3) -> Any:
@@ -515,46 +638,6 @@ def call_with_retries(fn: Any, label: str, attempts: int = 3) -> Any:
                 log(f"{label}: failed, retrying: {exc}")
                 time.sleep(1.0 + attempt * 2)
     raise last_error or RuntimeError(f"{label} failed")
-
-
-def normalize_official_rows(records: list[dict[str, Any]], exchange: str, default_board: str, source: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for raw in records:
-        code = normalize_code(
-            raw.get("代码")
-            or raw.get("公司代码")
-            or raw.get("A股代码")
-            or raw.get("证券代码")
-        )
-        if not code:
-            continue
-        name = (
-            raw.get("简称")
-            or raw.get("公司简称")
-            or raw.get("A股简称")
-            or raw.get("证券简称")
-            or ""
-        )
-        board = str(raw.get("板块") or default_board or "").strip()
-        rows.append(
-            {
-                "code": code,
-                "name": str(name).strip(),
-                "exchange": exchange,
-                "secid": secid_for_code(code),
-                "board": board,
-                "listing_date": str(
-                    raw.get("上市日期")
-                    or raw.get("A股上市日期")
-                    or ""
-                ).strip(),
-                "industry": str(raw.get("所属行业") or "").strip(),
-                "region": str(raw.get("地区") or raw.get("注册地") or "").strip(),
-                "official_source": source,
-                "raw_json": json.dumps(raw, ensure_ascii=False, default=str),
-            }
-        )
-    return rows
 
 
 def is_a_share_code(code: str, exchange: str) -> bool:
@@ -759,6 +842,27 @@ def fetch_kline_rows(
                     request_jitter,
                     source_breaker,
                 )
+            elif source == "mootdx":
+                code, rows = fetch_mootdx_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                )
+            elif source == "tickflow":
+                code, rows = fetch_tickflow_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                )
+            elif source == "baostock":
+                code, rows = fetch_baostock_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                )
             elif source == "netease":
                 code, rows = fetch_netease_kline_rows(
                     stock,
@@ -794,14 +898,23 @@ def fetch_kline_rows(
                     end,
                     adjust,
                 )
+            elif source == "tushare":
+                code, rows = fetch_tushare_kline_rows(
+                    stock,
+                    begin,
+                    end,
+                    adjust,
+                )
             else:
                 raise RuntimeError(f"unsupported kline source: {source}")
             last_code = code
             if rows:
+                if source_breaker:
+                    source_breaker.record_success(source)
                 return code, rows, source, time.time() - source_started
             errors.append(f"{source}: empty")
         except Exception as exc:
-            if source in ("akshare", "sina") and source_breaker:
+            if source in ("akshare", "sina", "mootdx", "tickflow", "baostock", "tushare") and source_breaker:
                 source_breaker.record_failure(source, exc)
             errors.append(f"{source}: {exc}")
     raise RuntimeError("; ".join(errors) or "all kline sources failed")
@@ -1103,6 +1216,423 @@ def value_by_alias(raw: dict[str, Any], aliases: list[str], fallback_index: int)
     return None
 
 
+def normalize_trade_date_text(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) >= 8:
+        return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+    return text[:10]
+
+
+def fetch_mootdx_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    if adjust != "none":
+        return stock["code"], []
+    code = stock["code"]
+    begin_date = f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+    end_date = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    begin_dt = datetime.strptime(begin_date, "%Y-%m-%d").date()
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").date()
+    offset = max(30, min(800, int((end_dt - begin_dt).days * 1.8) + 30))
+    client = mootdx_client()
+    call_variants = [
+        {"symbol": code, "category": 4, "offset": offset},
+        {"symbol": code, "frequency": 4, "offset": offset},
+        {"symbol": code, "category": 4, "start": 0, "offset": offset},
+        {"symbol": code, "frequency": 4, "start": 0, "offset": offset},
+        {"symbol": code, "market": mootdx_market_for_code(code), "category": 4, "offset": offset},
+        {"symbol": code, "market": mootdx_market_for_code(code), "frequency": 4, "offset": offset},
+    ]
+    last_error: Exception | None = None
+    df = None
+    for kwargs in call_variants:
+        try:
+            df = client.bars(**kwargs)
+            break
+        except TypeError as exc:
+            last_error = exc
+            continue
+    if df is None:
+        if last_error:
+            raise last_error
+        return code, []
+    if getattr(df, "empty", False):
+        return code, []
+    return code, parse_mootdx_kline_records(stock, df.to_dict("records"), begin_date, end_date)
+
+
+def parse_mootdx_kline_records(
+    stock: dict[str, Any],
+    records: list[dict[str, Any]],
+    begin_date: str,
+    end_date: str,
+) -> list[dict[str, Any]]:
+    code = stock["code"]
+    normalized: list[dict[str, Any]] = []
+    for raw in records:
+        trade_date = normalize_trade_date_text(
+            raw.get("datetime") or raw.get("date") or raw.get("time") or raw.get("trade_date")
+        )
+        if not trade_date:
+            continue
+        open_price = to_float(value_by_alias(raw, ["open", "OPEN"], 1))
+        close = to_float(value_by_alias(raw, ["close", "CLOSE"], 2))
+        high = to_float(value_by_alias(raw, ["high", "HIGH"], 3))
+        low = to_float(value_by_alias(raw, ["low", "LOW"], 4))
+        if close is None and open_price is None and high is None and low is None:
+            continue
+        normalized.append(
+            {
+                "trade_date": trade_date,
+                "open": open_price,
+                "close": close,
+                "high": high,
+                "low": low,
+                "volume": to_float(value_by_alias(raw, ["vol", "volume", "VOL"], 5)),
+                "amount": to_float(value_by_alias(raw, ["amount", "AMOUNT"], 6)),
+                "raw": raw,
+            }
+        )
+    normalized.sort(key=lambda item: item["trade_date"])
+    rows: list[dict[str, Any]] = []
+    previous_close: float | None = None
+    for item in normalized:
+        trade_date = item["trade_date"]
+        close = item["close"]
+        high = item["high"]
+        low = item["low"]
+        if begin_date <= trade_date <= end_date:
+            rows.append(
+                {
+                    "code": code,
+                    "trade_date": trade_date,
+                    "name": stock.get("name") or "",
+                    "exchange": stock.get("exchange") or exchange_for_code(code),
+                    "open": item["open"],
+                    "close": close,
+                    "high": high,
+                    "low": low,
+                    "volume": item["volume"],
+                    "amount": item["amount"],
+                    "amplitude": computed_amplitude(high, low, previous_close),
+                    "pct_chg": (
+                        round((close - previous_close) / previous_close * 100, 6)
+                        if close is not None and previous_close
+                        else None
+                    ),
+                    "change_amount": computed_change_amount(close, previous_close),
+                    "turnover": None,
+                    "source": "mootdx.bars.category=4.adjust=none",
+                    "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                    "raw_line": json.dumps(item["raw"], ensure_ascii=False, default=str),
+                }
+            )
+        if close is not None:
+            previous_close = close
+    return rows
+
+
+def tickflow_timestamp_to_date(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    text = str(value).strip()
+    if not text:
+        return ""
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    try:
+        number = float(text)
+    except ValueError:
+        return normalize_trade_date_text(text)
+    if number > 10_000_000_000:
+        number /= 1000
+    return datetime.fromtimestamp(number, CHINA_TZ).date().isoformat()
+
+
+def tickflow_records_from_payload(payload: Any) -> list[dict[str, Any]]:
+    if payload is None:
+        return []
+    if hasattr(payload, "to_dict"):
+        try:
+            return list(payload.to_dict("records"))
+        except TypeError:
+            pass
+    if isinstance(payload, dict):
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        lengths = [len(value) for value in data.values() if isinstance(value, list)]
+        if not lengths:
+            return []
+        count = max(lengths)
+        records: list[dict[str, Any]] = []
+        for idx in range(count):
+            record: dict[str, Any] = {}
+            for key, value in data.items():
+                if isinstance(value, list):
+                    record[key] = value[idx] if idx < len(value) else None
+                else:
+                    record[key] = value
+            records.append(record)
+        return records
+    if isinstance(payload, list):
+        return [item for item in payload if isinstance(item, dict)]
+    return []
+
+
+def fetch_tickflow_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    if adjust != "none":
+        return stock["code"], []
+    code = stock["code"]
+    begin_date = f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+    end_date = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    start_dt = datetime.strptime(begin_date, "%Y-%m-%d").replace(tzinfo=CHINA_TZ)
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59, tzinfo=CHINA_TZ)
+    client = tickflow_client()
+    payload = client.klines.get(
+        tickflow_symbol_for_code(code),
+        period="1d",
+        start_time=int(start_dt.timestamp() * 1000),
+        end_time=int(end_dt.timestamp() * 1000),
+        count=10000,
+    )
+    return code, parse_tickflow_kline_records(stock, tickflow_records_from_payload(payload), begin_date, end_date)
+
+
+def parse_tickflow_kline_records(
+    stock: dict[str, Any],
+    records: list[dict[str, Any]],
+    begin_date: str,
+    end_date: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    code = stock["code"]
+    normalized: list[dict[str, Any]] = []
+    for raw in records:
+        trade_date = normalize_trade_date_text(raw.get("trade_date") or raw.get("date"))
+        if not trade_date:
+            trade_date = tickflow_timestamp_to_date(raw.get("timestamp") or raw.get("time") or raw.get("datetime"))
+        if not trade_date or trade_date < begin_date or trade_date > end_date:
+            continue
+        close = to_float(raw.get("close"))
+        open_price = to_float(raw.get("open"))
+        high = to_float(raw.get("high"))
+        low = to_float(raw.get("low"))
+        if close is None and open_price is None and high is None and low is None:
+            continue
+        normalized.append(
+            {
+                "trade_date": trade_date,
+                "open": open_price,
+                "close": close,
+                "high": high,
+                "low": low,
+                "volume": to_float(raw.get("volume")),
+                "amount": to_float(raw.get("amount")),
+                "prev_close": to_float(raw.get("prev_close") or raw.get("previous_close")),
+                "raw": raw,
+            }
+        )
+    normalized.sort(key=lambda item: item["trade_date"])
+    previous_close: float | None = None
+    for item in normalized:
+        close = item["close"]
+        preclose = item["prev_close"] if item["prev_close"] is not None else previous_close
+        rows.append(
+            {
+                "code": code,
+                "trade_date": item["trade_date"],
+                "name": stock.get("name") or "",
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": item["open"],
+                "close": close,
+                "high": item["high"],
+                "low": item["low"],
+                "volume": item["volume"],
+                "amount": item["amount"],
+                "amplitude": computed_amplitude(item["high"], item["low"], preclose),
+                "pct_chg": (
+                    round((close - preclose) / preclose * 100, 6)
+                    if close is not None and preclose
+                    else None
+                ),
+                "change_amount": computed_change_amount(close, preclose),
+                "turnover": to_float(item["raw"].get("turnover") or item["raw"].get("turn")),
+                "source": "tickflow.klines.get.period=1d.adjust=none",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": json.dumps(item["raw"], ensure_ascii=False, default=str),
+            }
+        )
+        if close is not None:
+            previous_close = close
+    return rows
+
+
+def fetch_baostock_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    import baostock as bs  # type: ignore
+
+    code = stock["code"]
+    start_date = f"{begin[:4]}-{begin[4:6]}-{begin[6:]}"
+    end_date = f"{end[:4]}-{end[4:6]}-{end[6:]}"
+    adjustflag = {"none": "3", "qfq": "2", "hfq": "1"}[adjust]
+    fields = ",".join(
+        [
+            "date",
+            "code",
+            "open",
+            "high",
+            "low",
+            "close",
+            "preclose",
+            "volume",
+            "amount",
+            "adjustflag",
+            "turn",
+            "tradestatus",
+            "pctChg",
+            "isST",
+        ]
+    )
+    with BAOSTOCK_LOCK:
+        login = bs.login()
+        if getattr(login, "error_code", "0") != "0":
+            raise RuntimeError(getattr(login, "error_msg", "baostock login failed"))
+        try:
+            result = bs.query_history_k_data_plus(
+                baostock_symbol_for_code(code),
+                fields,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                adjustflag=adjustflag,
+            )
+            if getattr(result, "error_code", "0") != "0":
+                raise RuntimeError(getattr(result, "error_msg", "baostock query failed"))
+            df = result.get_data()
+        finally:
+            bs.logout()
+    if df is None or df.empty:
+        return code, []
+    return code, parse_baostock_kline_records(stock, df.to_dict("records"), adjust)
+
+
+def parse_baostock_kline_records(
+    stock: dict[str, Any],
+    records: list[dict[str, Any]],
+    adjust: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    code = stock["code"]
+    for raw in records:
+        trade_date = str(raw.get("date") or "").strip()[:10]
+        if not trade_date:
+            continue
+        open_price = to_float(raw.get("open"))
+        close = to_float(raw.get("close"))
+        high = to_float(raw.get("high"))
+        low = to_float(raw.get("low"))
+        preclose = to_float(raw.get("preclose"))
+        if close is None and open_price is None and high is None and low is None:
+            continue
+        rows.append(
+            {
+                "code": code,
+                "trade_date": trade_date,
+                "name": stock.get("name") or "",
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": open_price,
+                "close": close,
+                "high": high,
+                "low": low,
+                "volume": to_float(raw.get("volume")),
+                "amount": to_float(raw.get("amount")),
+                "amplitude": computed_amplitude(high, low, preclose),
+                "pct_chg": to_float(raw.get("pctChg")),
+                "change_amount": computed_change_amount(close, preclose),
+                "turnover": to_float(raw.get("turn")),
+                "source": f"baostock.query_history_k_data_plus.adjust={adjust}",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": json.dumps(raw, ensure_ascii=False, default=str),
+            }
+        )
+    return sorted(rows, key=lambda item: item["trade_date"])
+
+
+def fetch_tushare_kline_rows(
+    stock: dict[str, Any],
+    begin: str,
+    end: str,
+    adjust: str,
+) -> tuple[str, list[dict[str, Any]]]:
+    if adjust != "none":
+        return stock["code"], []
+    token = os.environ.get("TUSHARE_TOKEN") or os.environ.get("TS_TOKEN")
+    if not token:
+        raise RuntimeError("TUSHARE_TOKEN/TS_TOKEN is not set")
+
+    import tushare as ts  # type: ignore
+
+    code = stock["code"]
+    pro = ts.pro_api(token)
+    df = pro.daily(ts_code=tushare_ts_code_for_code(code), start_date=begin, end_date=end)
+    if df is None or df.empty:
+        return code, []
+    return code, parse_tushare_kline_records(stock, df.to_dict("records"))
+
+
+def parse_tushare_kline_records(stock: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    code = stock["code"]
+    for raw in records:
+        raw_date = str(raw.get("trade_date") or "").strip()
+        if len(raw_date) != 8:
+            continue
+        trade_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+        amount = to_float(raw.get("amount"))
+        if amount is not None:
+            amount *= 1000
+        rows.append(
+            {
+                "code": code,
+                "trade_date": trade_date,
+                "name": stock.get("name") or "",
+                "exchange": stock.get("exchange") or exchange_for_code(code),
+                "open": to_float(raw.get("open")),
+                "close": to_float(raw.get("close")),
+                "high": to_float(raw.get("high")),
+                "low": to_float(raw.get("low")),
+                "volume": to_float(raw.get("vol")),
+                "amount": amount,
+                "amplitude": None,
+                "pct_chg": to_float(raw.get("pct_chg")),
+                "change_amount": to_float(raw.get("change")),
+                "turnover": None,
+                "source": "tushare.pro.daily.adjust=none",
+                "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                "raw_line": json.dumps(raw, ensure_ascii=False, default=str),
+            }
+        )
+    return sorted(rows, key=lambda item: item["trade_date"])
+
+
 def fetch_akshare_kline_rows(
     stock: dict[str, Any],
     begin: str,
@@ -1153,7 +1683,7 @@ def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]
     conn.commit()
 
 
-def fetch_popularity_top100(
+def fetch_popularity_top200(
     trade_date: str,
     timeout: int,
     limit: int,
@@ -1168,10 +1698,10 @@ def fetch_popularity_top100(
     for source in sources:
         try:
             if source == "akshare":
-                rows = fetch_popularity_top100_akshare(trade_date, limit)
+                rows = fetch_popularity_top200_akshare(trade_date, limit)
                 source_name = "akshare.stock_hot_rank_em"
             elif source == "eastmoney":
-                rows = fetch_popularity_top100_eastmoney(
+                rows = fetch_popularity_top200_eastmoney(
                     trade_date,
                     timeout,
                     limit,
@@ -1193,7 +1723,7 @@ def fetch_popularity_top100(
     raise RuntimeError("; ".join(errors) or "all popularity sources failed")
 
 
-def fetch_popularity_top100_akshare(trade_date: str, limit: int) -> list[dict[str, Any]]:
+def fetch_popularity_top200_akshare(trade_date: str, limit: int) -> list[dict[str, Any]]:
     import akshare as ak  # type: ignore
 
     df = ak.stock_hot_rank_em()
@@ -1236,7 +1766,7 @@ def fetch_popularity_top100_akshare(trade_date: str, limit: int) -> list[dict[st
     return rows[:limit]
 
 
-def fetch_popularity_top100_eastmoney(
+def fetch_popularity_top200_eastmoney(
     trade_date: str,
     timeout: int,
     limit: int,
@@ -1446,7 +1976,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_kline_code ON daily_kline(code)")
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS popularity_top100 (
+        CREATE TABLE IF NOT EXISTS popularity_top200 (
             trade_date TEXT NOT NULL,
             rank INTEGER NOT NULL,
             code TEXT NOT NULL,
@@ -1463,7 +1993,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_popularity_top100_code ON popularity_top100(code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_popularity_top200_code ON popularity_top200(code)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -1748,9 +2278,10 @@ def load_cached_official_universe(conn: sqlite3.Connection, limit: int | None) -
             code, name, exchange, secid, board, listing_date,
             industry, region, official_source, raw_json
         FROM stock_universe
-        WHERE official_source IN ('SSE', 'SZSE', 'BSE')
+        WHERE official_source = ?
         ORDER BY code
-        """
+        """,
+        (CSINDEX_ALL_SHARE_SOURCE,),
     ).fetchall()
     result = [
         {
@@ -1773,21 +2304,26 @@ def load_cached_official_universe(conn: sqlite3.Connection, limit: int | None) -
 def cached_official_universe_counts(conn: sqlite3.Connection) -> dict[str, int]:
     rows = conn.execute(
         """
-        SELECT official_source, COUNT(*)
+        SELECT exchange, COUNT(*)
         FROM stock_universe
-        WHERE official_source IN ('SSE', 'SZSE', 'BSE')
-        GROUP BY official_source
-        """
+        WHERE official_source = ?
+        GROUP BY exchange
+        """,
+        (CSINDEX_ALL_SHARE_SOURCE,),
     ).fetchall()
-    counts = {"SSE": 0, "SZSE": 0, "BSE": 0}
-    for source, count in rows:
-        counts[str(source)] = int(count or 0)
+    counts = {CSINDEX_ALL_SHARE_SOURCE: 0, "SH": 0, "SZ": 0, "BJ": 0}
+    total = 0
+    for exchange, count in rows:
+        value = int(count or 0)
+        total += value
+        counts[str(exchange or "UNKNOWN")] = value
+    counts[CSINDEX_ALL_SHARE_SOURCE] = total
     return counts
 
 
 def has_complete_cached_official_universe(conn: sqlite3.Connection) -> bool:
     counts = cached_official_universe_counts(conn)
-    return all(counts[source] > 0 for source in ("SSE", "SZSE", "BSE"))
+    return counts.get(CSINDEX_ALL_SHARE_SOURCE, 0) > 0
 
 
 def should_refresh_official_universe(conn: sqlite3.Connection, args: argparse.Namespace) -> bool:
@@ -1849,8 +2385,8 @@ def build_fetch_jobs(
     return jobs
 
 
-def replace_popularity_top100(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
-    conn.execute("DELETE FROM popularity_top100 WHERE trade_date = ?", (trade_date,))
+def replace_popularity_top200(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
+    conn.execute("DELETE FROM popularity_top200 WHERE trade_date = ?", (trade_date,))
     if not rows:
         conn.commit()
         return 0
@@ -1872,7 +2408,7 @@ def replace_popularity_top100(conn: sqlite3.Connection, trade_date: str, rows: l
     updates = ",".join(f"{col}=excluded.{col}" for col in columns if col not in ("trade_date", "rank"))
     conn.executemany(
         f"""
-        INSERT INTO popularity_top100 ({",".join(columns)})
+        INSERT INTO popularity_top200 ({",".join(columns)})
         VALUES ({placeholders})
         ON CONFLICT(trade_date, rank) DO UPDATE SET {updates}
         """,
@@ -2000,7 +2536,7 @@ def prefix_counts(stocks: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def popularity_count_for_date(conn: sqlite3.Connection, trade_date: str) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM popularity_top100 WHERE trade_date = ?", (trade_date,)).fetchone()
+    row = conn.execute("SELECT COUNT(*) FROM popularity_top200 WHERE trade_date = ?", (trade_date,)).fetchone()
     return int(row[0] or 0)
 
 
@@ -2178,7 +2714,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             stocks = load_cached_official_universe(conn, args.limit)
             counts = cached_official_universe_counts(conn)
             universe_source = f"cached_official_universe:{counts}"
-            log(f"official universe: using cached monthly universe counts={counts}")
+            log(f"official universe: using cached monthly CSI all-share universe counts={counts}")
         else:
             try:
                 stocks, universe_source = fetch_stock_universe(
@@ -2206,7 +2742,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         upsert_stock_universe(conn, stocks)
         universe_pruned = 0
         if actual_mode == "init" and (
-            universe_source.startswith("official_exchanges")
+            universe_source.startswith("official_csindex")
             or universe_source.startswith("cached_official_universe")
         ):
             universe_pruned = prune_stock_universe_to_codes(conn, {row["code"] for row in stocks})
@@ -2239,7 +2775,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     {"eastmoney", "akshare"},
                 )
                 log(f"popularity sources: order={','.join(popularity_sources)}")
-                popularity_rows, popularity_source = fetch_popularity_top100(
+                popularity_rows, popularity_source = fetch_popularity_top200(
                     args.trade_date,
                     args.request_timeout,
                     args.popularity_limit,
@@ -2250,11 +2786,11 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     args.request_delay,
                     args.request_jitter,
                 )
-                popularity_count = replace_popularity_top100(conn, args.trade_date, popularity_rows)
+                popularity_count = replace_popularity_top200(conn, args.trade_date, popularity_rows)
                 log(f"popularity: rows={popularity_count} source={popularity_source}")
             except Exception as exc:
                 popularity_error = str(exc)
-                replace_popularity_top100(conn, args.trade_date, [])
+                replace_popularity_top200(conn, args.trade_date, [])
                 log(f"popularity: unavailable error={popularity_error}")
 
         rows_upserted = 0
@@ -2262,9 +2798,9 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         pending: list[dict[str, Any]] = []
         completed = 0
         started = time.time()
-        kline_sources = parse_sources(args.kline_sources, DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent", "sina", "netease", "akshare"})
+        kline_sources = parse_sources(args.kline_sources, DEFAULT_KLINE_SOURCES, KLINE_SOURCE_SET)
         source_breaker = SourceCircuitBreaker(args.source_fail_threshold)
-        log(f"kline sources: order={','.join(kline_sources)}")
+        log(f"kline sources: order={','.join(kline_sources)} strategy={args.kline_source_strategy}")
         log(
             "network policy: "
             f"workers={args.max_workers} attempts={args.request_attempts} "
@@ -2283,26 +2819,32 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         last_progress = started
         last_error = ""
         with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-            futures = {
-                executor.submit(
+            futures = {}
+            for stock, job_begin, job_end in fetch_jobs:
+                stock_sources = rotated_sources_for_code(
+                    stock["code"],
+                    kline_sources,
+                    args.kline_source_strategy,
+                    ROTATE_PRIMARY_AVOID_SOURCES,
+                )
+                future = executor.submit(
                     fetch_kline_rows,
                     stock,
                     job_begin,
                     job_end,
                     args.adjust,
                     args.request_timeout,
-                    kline_sources,
+                    stock_sources,
                     args.request_attempts,
                     args.retry_base_sleep,
                     args.retry_max_sleep,
                     args.request_delay,
                     args.request_jitter,
                     source_breaker,
-                ): stock
-                for stock, job_begin, job_end in fetch_jobs
-            }
+                )
+                futures[future] = (stock, stock_sources)
             for future in as_completed(futures):
-                stock = futures[future]
+                stock, stock_sources = futures[future]
                 completed += 1
                 try:
                     _code, rows, source, source_seconds = future.result()
@@ -2311,7 +2853,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                         success_symbols += 1
                         source_counts[source] = source_counts.get(source, 0) + 1
                         source_elapsed[source] = source_elapsed.get(source, 0.0) + source_seconds
-                        if kline_sources and source != kline_sources[0]:
+                        if stock_sources and source != stock_sources[0]:
                             fallback_symbols += 1
                     else:
                         empty_symbols += 1
@@ -2368,6 +2910,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             f"request_delay={args.request_delay}; "
             f"request_jitter={args.request_jitter}; "
             f"source_fail_threshold={args.source_fail_threshold}; "
+            f"kline_source_strategy={args.kline_source_strategy}; "
             f"kline_source_breaker={json.dumps(source_breaker.snapshot(), ensure_ascii=False)}; "
             f"kline_source_counts={format_count_map(source_counts)}; "
             f"kline_fallback_symbols={fallback_symbols}"
@@ -2407,6 +2950,7 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "request_jitter": args.request_jitter,
             "source_fail_threshold": args.source_fail_threshold,
             "kline_source_breaker": source_breaker.snapshot(),
+            "kline_source_strategy": args.kline_source_strategy,
             "kline_source_counts": source_counts,
             "kline_fallback_symbols": fallback_symbols,
             "popularity_count": popularity_count,
@@ -2547,9 +3091,162 @@ def self_test() -> None:
     assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is False
     assert breaker.record_failure("eastmoney", TimeoutError("timeout")) is True
     assert breaker.allow("eastmoney") is False
-    assert parse_sources("auto", DEFAULT_KLINE_SOURCES, {"eastmoney", "tencent", "sina", "netease", "akshare"}) == DEFAULT_KLINE_SOURCES
+    assert parse_sources("auto", DEFAULT_KLINE_SOURCES, KLINE_SOURCE_SET) == DEFAULT_KLINE_SOURCES
+    assert rotated_sources_for_code("000001", ["tencent", "eastmoney"], "fallback") == ["tencent", "eastmoney"]
+    assert rotated_sources_for_code(
+        "000001", ["tencent", "mootdx", "eastmoney", "baostock"], "rotate", ROTATE_PRIMARY_AVOID_SOURCES
+    ) == [
+        "mootdx",
+        "eastmoney",
+        "tencent",
+        "baostock",
+    ]
+    assert rotated_sources_for_code(
+        "000002", ["tencent", "mootdx", "eastmoney", "baostock"], "rotate", ROTATE_PRIMARY_AVOID_SOURCES
+    ) == [
+        "eastmoney",
+        "tencent",
+        "mootdx",
+        "baostock",
+    ]
+    assert rotated_sources_for_code("000001", ["baostock", "tencent"], "rotate", ROTATE_PRIMARY_AVOID_SOURCES) == [
+        "tencent",
+        "baostock",
+    ]
+    parsed_mootdx = parse_mootdx_kline_records(
+        {"code": "600000", "name": "Sample", "exchange": "SH"},
+        [
+            {
+                "datetime": "2026-06-04 15:00:00",
+                "open": 9.8,
+                "close": 10.0,
+                "high": 10.2,
+                "low": 9.7,
+                "vol": 1000,
+                "amount": 10000,
+            },
+            {
+                "datetime": "2026-06-05 15:00:00",
+                "open": 10.1,
+                "close": 10.5,
+                "high": 11.0,
+                "low": 10.0,
+                "vol": 1200,
+                "amount": 12600,
+            },
+        ],
+        "2026-06-05",
+        "2026-06-05",
+    )
+    assert parsed_mootdx[0]["trade_date"] == "2026-06-05"
+    assert parsed_mootdx[0]["pct_chg"] == 5.0
+    assert parsed_mootdx[0]["amplitude"] == 10.0
+    assert baostock_symbol_for_code("600000") == "sh.600000"
+    assert baostock_symbol_for_code("000001") == "sz.000001"
+    assert tushare_ts_code_for_code("600000") == "600000.SH"
+    assert tickflow_symbol_for_code("920000") == "920000.BJ"
     assert value_by_alias({"date": "2026-06-05"}, ["date"], 0) == "2026-06-05"
     assert value_by_alias({"日期": "2026-06-05"}, ["date", "日期"], 0) == "2026-06-05"
+    parsed_baostock = parse_baostock_kline_records(
+        {"code": "600000", "name": "Sample", "exchange": "SH"},
+        [
+            {
+                "date": "2026-06-05",
+                "open": "10.00",
+                "high": "11.00",
+                "low": "9.50",
+                "close": "10.50",
+                "preclose": "10.00",
+                "volume": "1000",
+                "amount": "10500",
+                "turn": "1.2",
+                "pctChg": "5.0",
+            }
+        ],
+        "none",
+    )
+    assert parsed_baostock[0]["amplitude"] == 15.0
+    assert parsed_baostock[0]["change_amount"] == 0.5
+    parsed_tushare = parse_tushare_kline_records(
+        {"code": "600000", "name": "Sample", "exchange": "SH"},
+        [
+            {
+                "trade_date": "20260605",
+                "open": 10,
+                "high": 11,
+                "low": 9.5,
+                "close": 10.5,
+                "vol": 1000,
+                "amount": 12.3,
+                "pct_chg": 5.0,
+                "change": 0.5,
+            }
+        ],
+    )
+    assert parsed_tushare[0]["trade_date"] == "2026-06-05"
+    assert parsed_tushare[0]["amount"] == 12300.0
+    parsed_tickflow = parse_tickflow_kline_records(
+        {"code": "920000", "name": "Sample BJ", "exchange": "BJ"},
+        [
+            {
+                "symbol": "920000.BJ",
+                "name": "Sample BJ",
+                "trade_date": "2026-06-04",
+                "open": 9.8,
+                "high": 10.2,
+                "low": 9.7,
+                "close": 10.0,
+                "volume": 1000,
+                "amount": 10000,
+            },
+            {
+                "symbol": "920000.BJ",
+                "name": "Sample BJ",
+                "trade_date": "2026-06-05",
+                "open": 10.1,
+                "high": 11.0,
+                "low": 10.0,
+                "close": 10.5,
+                "prev_close": 10.0,
+                "volume": 1200,
+                "amount": 12600,
+            },
+        ],
+        "2026-06-05",
+        "2026-06-05",
+    )
+    assert parsed_tickflow[0]["trade_date"] == "2026-06-05"
+    assert parsed_tickflow[0]["pct_chg"] == 5.0
+    assert parsed_tickflow[0]["amplitude"] == 10.0
+    assert tickflow_records_from_payload({"open": [1, 2], "close": [3, 4]}) == [
+        {"open": 1, "close": 3},
+        {"open": 2, "close": 4},
+    ]
+    parsed_csindex = normalize_csindex_constituent_rows(
+        [
+            {
+                "日期": "2026-05-29",
+                "指数代码": "000985",
+                "指数名称": "中证全指",
+                "成分券代码": "600000",
+                "成分券名称": "浦发银行",
+                "交易所": "上海证券交易所",
+            },
+            {
+                "日期": "2026-05-29",
+                "指数代码": "000985",
+                "指数名称": "中证全指",
+                "成分券代码": "300750",
+                "成分券名称": "宁德时代",
+                "交易所英文名称": "Shenzhen Stock Exchange",
+            },
+        ]
+    )
+    assert parsed_csindex[0]["official_source"] == CSINDEX_ALL_SHARE_SOURCE
+    assert parsed_csindex[0]["exchange"] == "SH"
+    assert parsed_csindex[1]["exchange"] == "SZ"
+    assert parsed_csindex[0]["board"] == "中证全指"
+    assert parsed_csindex[0]["listing_date"] == "2026-05-29"
     sample_csv = (
         "date,code,name,close,high,low,open,preclose,change,pct,volume,amount,turnover\n"
         "2026-06-05,'000001,Sample,12.34,12.50,12.00,12.10,12.00,0.34,2.83,1000,123400,1.20\n"
@@ -2576,6 +3273,16 @@ def self_test() -> None:
             assert cached_symbols[0]["name"] == "sample"
             assert cached_symbols[0]["raw_json"] == "{}"
             assert cached_symbols[1]["code"] == "000004"
+            assert has_complete_cached_official_universe(conn) is False
+            upsert_stock_universe(conn, parsed_csindex)
+            cached_official = load_cached_official_universe(conn, None)
+            assert len(cached_official) == 2
+            assert cached_official[0]["official_source"] == CSINDEX_ALL_SHARE_SOURCE
+            official_counts = cached_official_universe_counts(conn)
+            assert official_counts[CSINDEX_ALL_SHARE_SOURCE] == 2
+            assert official_counts["SH"] == 1
+            assert official_counts["SZ"] == 1
+            assert has_complete_cached_official_universe(conn) is True
             upsert_stock_universe(
                 conn,
                 [
@@ -2588,7 +3295,7 @@ def self_test() -> None:
                     }
                 ],
             )
-            assert prune_stock_universe_to_codes(conn, {"000001"}) == 1
+            assert prune_stock_universe_to_codes(conn, {"000001"}) == 3
             assert conn.execute("SELECT COUNT(*) FROM stock_universe WHERE code='999999'").fetchone()[0] == 0
             start = date(2025, 1, 1)
             rows = []
@@ -2640,12 +3347,12 @@ def self_test() -> None:
                     "raw_json": "{}",
                 }
             ]
-            assert replace_popularity_top100(conn, "2026-06-04", popularity_rows) == 1
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 1
-            assert replace_popularity_top100(conn, "2026-06-05", []) == 0
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 1
-            assert replace_popularity_top100(conn, "2026-06-04", []) == 0
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 0
+            assert replace_popularity_top200(conn, "2026-06-04", popularity_rows) == 1
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 1
+            assert replace_popularity_top200(conn, "2026-06-05", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 1
+            assert replace_popularity_top200(conn, "2026-06-04", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 0
             seed_path = Path(tmp) / "seed.csv"
             seed_path.write_text(
                 "code,date,open,close,high,low,volume,amount,name\n"
@@ -2714,7 +3421,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trade-date", default=now_china().date().isoformat())
     parser.add_argument("--mode", choices=["auto", "init", "daily"], default="auto")
     parser.add_argument("--adjust", choices=sorted(ADJUST_FLAGS), default="none")
-    parser.add_argument("--kline-sources", default="auto", help="comma-separated K-line source order: auto, tencent,eastmoney,sina,netease,akshare")
+    parser.add_argument(
+        "--kline-sources",
+        default="auto",
+        help="comma-separated K-line source order: auto, tencent,mootdx,eastmoney,tickflow,baostock,sina,netease,akshare,tushare",
+    )
+    parser.add_argument(
+        "--kline-source-strategy",
+        choices=["rotate", "fallback"],
+        default="rotate",
+        help="rotate spreads each symbol's first K-line source across non-serial sources; fallback preserves the listed order for every symbol",
+    )
     parser.add_argument("--retain-trading-days", type=int, default=126)
     parser.add_argument("--initial-lookback-days", type=int, default=240)
     parser.add_argument("--incremental-lookback-days", type=int, default=12)
@@ -2733,12 +3450,17 @@ def parse_args() -> argparse.Namespace:
         "--universe-source",
         choices=["official", "auto", "market", "seed"],
         default="official",
-        help="stock universe source; official uses SSE/SZSE/BSE official lists via AkShare wrappers",
+        help="stock universe source; official uses CSI All Share 000985 constituents via AkShare",
     )
-    parser.add_argument("--refresh-universe", action="store_true", help="force refresh official stock universe even outside the monthly refresh day")
-    parser.add_argument("--official-universe-refresh-day", type=int, default=1, help="day of month to refresh official SSE/SZSE/BSE universe")
-    parser.add_argument("--skip-popularity", action="store_true", help="skip current-day popularity top 100 sync")
-    parser.add_argument("--popularity-limit", type=int, default=100, help="number of popularity rows to keep for the current trade date")
+    parser.add_argument("--refresh-universe", action="store_true", help="force refresh CSI All Share stock universe even outside the monthly refresh day")
+    parser.add_argument("--official-universe-refresh-day", type=int, default=1, help="day of month to refresh official CSI All Share universe")
+    parser.add_argument("--skip-popularity", action="store_true", help="skip current-day popularity top 200 sync")
+    parser.add_argument(
+        "--popularity-limit",
+        type=int,
+        default=DEFAULT_POPULARITY_LIMIT,
+        help="number of popularity rows to keep for the current trade date; default 200",
+    )
     parser.add_argument("--popularity-sources", default="auto", help="comma-separated popularity source order: auto, eastmoney,akshare")
     parser.add_argument("--max-workers", type=int, default=4)
     parser.add_argument("--batch-rows", type=int, default=5000)
