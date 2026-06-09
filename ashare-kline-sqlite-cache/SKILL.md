@@ -118,27 +118,29 @@ hot_value, rank_change, latest_price, pct_chg,
 source, fetched_at, raw_json
 ```
 
-Data source priority is built for resilience: use official exchange lists for the universe, Tencent first for K-line speed, fall back to Eastmoney when Tencent returns empty or fails, and use Eastmoney app ranking for popularity top 100 with optional AkShare fallback. Use `--universe-source market` only when the user explicitly accepts market-data-source stock lists instead of official exchange lists.
+Data source priority is built for resilience: use official exchange lists for the universe, Tencent first for K-line speed, then fall back to Eastmoney, Sina daily history, NetEase historical CSV, and AkShare daily history when earlier sources return empty or fail. Use Eastmoney app ranking for popularity top 100 with optional AkShare fallback. Use `--universe-source market` only when the user explicitly accepts market-data-source stock lists instead of official exchange lists.
 
 ## Multi-Source Auto Switching
 
 Keep source switching automatic by default:
 
-- K-line default: `--kline-sources auto`, equivalent to `tencent,eastmoney`.
+- K-line default: `--kline-sources auto`, equivalent to `tencent,eastmoney,sina,netease,akshare`.
 - Popularity default: `--popularity-sources auto`, equivalent to `eastmoney,akshare`.
 - Universe default: `--universe-source official`, using cached official exchange lists except on the monthly refresh day.
+- Source circuit breaker default: `--source-fail-threshold 3`; after a K-line source has three consecutive request failures in one run, later symbol fetches skip it and go directly to the next configured source. Successful requests reset that source's failure streak. Already in-flight concurrent requests may still finish.
 
 Override source order only when diagnosing vendor outages:
 
 ```powershell
 python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
   --mode daily `
-  --kline-sources eastmoney,tencent `
+  --kline-sources eastmoney,tencent,sina,netease,akshare `
   --popularity-sources akshare,eastmoney
 ```
 
 Every normalized K-line row stores its actual source in `daily_kline.source`; popularity rows store their actual source in `popularity_top100.source`.
 Progress logs also show K-line source counts, fallback count, and average successful source latency so slow or failing vendors are visible during a long run.
+If a source is disabled by the circuit breaker, progress logs include `disabled_sources=...`, `sync_runs.notes` records `kline_source_breaker`, and the JSON summary includes the breaker threshold, per-source request failure counts, failure streaks, and disabled source list.
 
 ## Public Endpoint Stability
 
@@ -148,6 +150,7 @@ Public market-data endpoints can return timeouts, empty responses, or rate-limit
 - `--request-attempts` defaults to `4`.
 - `--retry-base-sleep` and `--retry-max-sleep` control exponential backoff after failed HTTP requests.
 - `--request-delay` and `--request-jitter` add a shared cross-thread delay between public endpoint requests.
+- `--source-fail-threshold` defaults to `3` so consecutively timing-out K-line sources are skipped for the rest of the run instead of being retried for every symbol; use `0` only when explicitly diagnosing all sources.
 
 If failures remain high, reduce concurrency and increase pacing before retrying:
 
