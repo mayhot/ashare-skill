@@ -1,4 +1,4 @@
 interface:
   display_name: "A-Share Kline SQLite Cache"
-  short_description: "Fetch A-share daily K-line data and today's popularity top 200 into SQLite"
-  default_prompt: "Use $ashare-kline-sqlite-cache to sync full-market A-share daily K-line data and today's popularity top 200 into SQLite after the close."
+  short_description: "Fetch A-share daily K-line data, today's popularity top 100, and today's turnover top 200 into SQLite"
+  default_prompt: "Use $ashare-kline-sqlite-cache to sync full-market A-share daily K-line data plus today's popularity top 100 and turnover top 200 snapshots into SQLite after the close."

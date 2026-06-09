@@ -12,6 +12,7 @@ import argparse
 import csv
 import json
 import math
+import sqlite3
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -21,6 +22,8 @@ from typing import Any
 
 
 GREEN = "green"
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 YELLOW = "yellow"
 RED = "red"
 UNKNOWN = "unknown"
@@ -90,6 +93,47 @@ def fetch_json(url: str, timeout: int = 25) -> Any:
     req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_cached_daily(code: str, db_path: Path, rows: int = 260) -> tuple[list[dict[str, Any]], str]:
+    if not db_path.exists():
+        raise RuntimeError("market cache db not found")
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "daily_kline"):
+            raise RuntimeError("daily_kline table not found")
+        raw_rows = conn.execute(
+            """
+            SELECT trade_date, open, close, high, low, volume
+            FROM daily_kline
+            WHERE code = ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+            """,
+            (normalize_code(code), rows),
+        ).fetchall()
+    parsed = [
+        {
+            "date": row["trade_date"],
+            "open": float(row["open"]),
+            "close": float(row["close"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "volume": float(row["volume"]),
+        }
+        for row in reversed(raw_rows)
+    ]
+    if len(parsed) < 60:
+        raise RuntimeError(f"local SQLite K-line rows < 60: {len(parsed)}")
+    return parsed, "ashare-kline-sqlite-cache SQLite daily_kline"
 
 
 def fetch_tencent_daily(code: str, rows: int = 260) -> tuple[list[dict[str, Any]], str]:
@@ -192,7 +236,13 @@ def detect_pattern(krows: list[dict[str, Any]]) -> tuple[str, str, str, float, s
     )
 
 
-def derive_candidate(symbol: str, name_map: dict[str, str], no_network: bool) -> dict[str, Any]:
+def derive_candidate(
+    symbol: str,
+    name_map: dict[str, str],
+    no_network: bool,
+    market_cache_db: Path,
+    ignore_market_cache: bool,
+) -> dict[str, Any]:
     code = normalize_code(symbol) or name_map.get(symbol)
     if not code:
         return {
@@ -204,11 +254,15 @@ def derive_candidate(symbol: str, name_map: dict[str, str], no_network: bool) ->
             "error": "无法解析名称，请提供代码或name-map",
         }
     candidate: dict[str, Any] = {"code": code, "name": symbol if not normalize_code(symbol) else code}
-    if no_network:
-        candidate.update({"pattern": "", "trigger": "网络禁用，未抓取公开K线", "invalidation": "无法评估", "error": "network disabled"})
-        return candidate
     try:
-        krows, source = fetch_tencent_daily(code)
+        try:
+            if ignore_market_cache:
+                raise RuntimeError("local SQLite ignored")
+            krows, source = fetch_cached_daily(code, market_cache_db)
+        except Exception:
+            if no_network:
+                raise RuntimeError("network disabled and local SQLite K-line unavailable")
+            krows, source = fetch_tencent_daily(code)
         pattern, trigger, invalidation, invalidation_pct, volume_state = detect_pattern(krows)
         last = krows[-1]
         candidate.update(
@@ -481,7 +535,13 @@ def build_from_symbols(args: argparse.Namespace) -> dict[str, Any]:
         data["leading_themes"] = [x.strip() for x in args.leading_themes.split(",") if x.strip()]
     symbols = [x.strip() for x in args.symbols.split(",") if x.strip()]
     name_map = load_name_map(args.name_map)
-    data["candidates"] = [derive_candidate(symbol, name_map, args.no_network) for symbol in symbols]
+    market_cache_db = Path(args.market_cache_db)
+    if not market_cache_db.is_absolute():
+        market_cache_db = ROOT / market_cache_db
+    data["candidates"] = [
+        derive_candidate(symbol, name_map, args.no_network, market_cache_db, args.ignore_market_cache)
+        for symbol in symbols
+    ]
     return data
 
 
@@ -501,6 +561,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--account-week-return", type=float)
     parser.add_argument("--max-single-position")
     parser.add_argument("--trader-state")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public K-line APIs.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true", help="Skip ashare-kline-sqlite-cache SQLite reads.")
     parser.add_argument("--no-network", action="store_true")
     return parser.parse_args()
 

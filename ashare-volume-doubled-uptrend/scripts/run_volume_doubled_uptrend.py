@@ -14,6 +14,7 @@ from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILL_NAME = "ashare-volume-doubled-uptrend"
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 DEFAULT_MIN_MARKET_CAP_YUAN = 20_000_000_000
 MARKET_CAP_COLUMNS = (
     "total_mv",
@@ -94,6 +95,11 @@ def failed_codes_path(args: argparse.Namespace) -> Path:
     return cache_dir(args) / "failed_kline_codes.csv"
 
 
+def market_cache_db_path(args: argparse.Namespace) -> Path:
+    path = Path(args.market_cache_db)
+    return path if path.is_absolute() else ROOT / path
+
+
 def normalize_code(code: object) -> str:
     text = str(code).strip()
     if "." in text and text.split(".")[-1].isdigit():
@@ -126,7 +132,66 @@ def url_json(url: str, timeout: int = 8) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def fetch_stock_list(limit: int | None = None) -> tuple[list[dict], str]:
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_market_cache_stock_list(args: argparse.Namespace, limit: int | None = None) -> tuple[list[dict], str] | None:
+    if args.ignore_market_cache:
+        return None
+    db_path = market_cache_db_path(args)
+    if not db_path.exists():
+        return None
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "stock_universe"):
+            return None
+        sql = """
+            SELECT code, name, latest_price, pct_chg, volume, amount, turnover, total_mv
+            FROM stock_universe
+            WHERE code IS NOT NULL AND code != ''
+            ORDER BY amount DESC
+        """
+        rows = conn.execute(sql).fetchall()
+    stock_rows: list[dict] = []
+    seen: set[str] = set()
+    for item in rows:
+        code = normalize_code(item["code"])
+        name = str(item["name"] or "").strip()
+        if not code or code in seen:
+            continue
+        if "ST" in name.upper() or "退" in name:
+            continue
+        seen.add(code)
+        stock_rows.append(
+            {
+                "code": code,
+                "name": name,
+                "latest_price": to_float(item["latest_price"]),
+                "latest_pct_chg": to_float(item["pct_chg"]),
+                "latest_volume": to_float(item["volume"]),
+                "latest_amount": to_float(item["amount"]),
+                "turnover": to_float(item["turnover"]),
+                "total_mv": to_float(item["total_mv"]),
+            }
+        )
+        if limit and len(stock_rows) >= limit:
+            break
+    if not stock_rows:
+        return None
+    return stock_rows, "ashare-kline-sqlite-cache SQLite stock_universe"
+
+
+def fetch_stock_list(args: argparse.Namespace, limit: int | None = None) -> tuple[list[dict], str]:
+    cached = fetch_market_cache_stock_list(args, limit)
+    if cached:
+        return cached
+    if args.no_network:
+        raise RuntimeError("network disabled and local SQLite stock_universe unavailable")
     try:
         rows = fetch_eastmoney_stock_list(limit)
         if rows:
@@ -641,6 +706,31 @@ def load_sqlite_kline(args: argparse.Namespace, codes: set[str] | None = None) -
     return normalize_kline_frame(df)
 
 
+def load_market_cache_kline(args: argparse.Namespace, codes: set[str] | None = None) -> "pd.DataFrame":
+    if args.ignore_market_cache:
+        return pd.DataFrame()
+    db_path = market_cache_db_path(args)
+    if not db_path.exists():
+        return pd.DataFrame()
+    cutoff = (datetime.strptime(args.trade_date, "%Y-%m-%d").date() - timedelta(days=args.cache_calendar_days)).isoformat()
+    columns = ["code", "trade_date AS date", "name", "open", "high", "low", "close", "volume", "amount"]
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        if not sqlite_table_exists(conn, "daily_kline"):
+            return pd.DataFrame()
+        if codes:
+            code_list = sorted(codes)
+            placeholders = ",".join("?" for _ in code_list)
+            query = (
+                f"SELECT {', '.join(columns)} FROM daily_kline "
+                f"WHERE trade_date >= ? AND trade_date <= ? AND code IN ({placeholders})"
+            )
+            df = pd.read_sql_query(query, conn, params=[cutoff, args.trade_date, *code_list])
+        else:
+            query = f"SELECT {', '.join(columns)} FROM daily_kline WHERE trade_date >= ? AND trade_date <= ?"
+            df = pd.read_sql_query(query, conn, params=[cutoff, args.trade_date])
+    return normalize_kline_frame(df)
+
+
 def sqlite_cache_summary(args: argparse.Namespace) -> dict:
     data_path, _meta_path = cache_paths(args)
     ensure_sqlite_cache(data_path)
@@ -750,6 +840,12 @@ def build_or_update_kline_cache(stock_rows: list[dict], args: argparse.Namespace
     data_path, meta_path = cache_paths(args)
     stock_codes = set(names)
     cached = load_cached_kline(args, stock_codes)
+    market_cached = load_market_cache_kline(args, stock_codes)
+    market_cache_rows = len(market_cached)
+    if not market_cached.empty:
+        market_cached["name"] = market_cached["code"].map(names).fillna(market_cached.get("name", ""))
+        save_cached_kline(market_cached, stock_rows, args, mode="market_cache_seed", failures=0)
+        cached = load_cached_kline(args, stock_codes)
     stock_count = len(stock_rows)
     mode = "incremental"
     failures = 0
@@ -758,34 +854,35 @@ def build_or_update_kline_cache(stock_rows: list[dict], args: argparse.Namespace
         complete_codes = complete_cache_codes(cached, args.trade_date)
         pending_rows = [row for row in stock_rows if row["code"] not in complete_codes]
         merged = cached
-        for batch_no, batch in enumerate(batched(pending_rows, args.batch_size), start=1):
-            frames, batch_failures = fetch_kline_frames(batch, args, args.initial_lookback_days)
-            failures += batch_failures
-            if frames:
-                fetched = pd.concat(frames, ignore_index=True)
-                merged = pd.concat([merged, fetched], ignore_index=True) if not merged.empty else fetched
-                merged = normalize_kline_frame(merged)
-                if not merged.empty:
-                    merged["name"] = merged["code"].map(names).fillna(merged.get("name", ""))
-                save_cached_kline(
-                    fetched,
-                    stock_rows,
-                    args,
-                    mode=f"{mode}_batch_{batch_no}",
-                    failures=failures,
+        if not args.no_network:
+            for batch_no, batch in enumerate(batched(pending_rows, args.batch_size), start=1):
+                frames, batch_failures = fetch_kline_frames(batch, args, args.initial_lookback_days)
+                failures += batch_failures
+                if frames:
+                    fetched = pd.concat(frames, ignore_index=True)
+                    merged = pd.concat([merged, fetched], ignore_index=True) if not merged.empty else fetched
+                    merged = normalize_kline_frame(merged)
+                    if not merged.empty:
+                        merged["name"] = merged["code"].map(names).fillna(merged.get("name", ""))
+                    save_cached_kline(
+                        fetched,
+                        stock_rows,
+                        args,
+                        mode=f"{mode}_batch_{batch_no}",
+                        failures=failures,
+                    )
+                print(
+                    f"cache batch {batch_no}: fetched {len(batch)} symbols, "
+                    f"cached {int(merged['code'].nunique()) if not merged.empty else 0}/{stock_count}, "
+                    f"failures {failures}",
+                    flush=True,
                 )
-            print(
-                f"cache batch {batch_no}: fetched {len(batch)} symbols, "
-                f"cached {int(merged['code'].nunique()) if not merged.empty else 0}/{stock_count}, "
-                f"failures {failures}",
-                flush=True,
-            )
         if merged.empty:
-            raise SystemExit("No kline data fetched. Check network access or use --kline-csv.")
+            raise SystemExit("No kline data available. Check ashare-kline-sqlite-cache, network access, or use --kline-csv.")
         unresolved_after_primary = [
             row for row in stock_rows if row["code"] not in complete_cache_codes(normalize_kline_frame(merged), args.trade_date)
         ]
-        if unresolved_after_primary and not args.no_baostock_fallback:
+        if unresolved_after_primary and not args.no_network and not args.no_baostock_fallback:
             print(f"baostock supplement: {len(unresolved_after_primary)} unresolved symbols", flush=True)
             supplement_frames, supplement_failures = fetch_baostock_supplement(unresolved_after_primary, args)
             failures += supplement_failures
@@ -803,7 +900,11 @@ def build_or_update_kline_cache(stock_rows: list[dict], args: argparse.Namespace
                     failures=failures,
                 )
     else:
-        frames, failures = fetch_kline_frames(stock_rows, args, args.incremental_lookback_days)
+        if args.no_network:
+            frames = []
+            failures = 0
+        else:
+            frames, failures = fetch_kline_frames(stock_rows, args, args.incremental_lookback_days)
         if frames:
             fetched = pd.concat(frames, ignore_index=True)
             save_cached_kline(fetched, stock_rows, args, mode=mode, failures=failures)
@@ -816,13 +917,15 @@ def build_or_update_kline_cache(stock_rows: list[dict], args: argparse.Namespace
         merged["name"] = merged["code"].map(names).fillna(merged.get("name", ""))
     save_cached_kline(pd.DataFrame(), stock_rows, args, mode=mode, failures=failures)
     source = (
-        f"{list_source}+腾讯/东方财富/BaoStock日K缓存；缓存 `{data_path}`；元数据 `{meta_path}`；"
+        f"{list_source}+ashare-kline-sqlite-cache SQLite优先+腾讯/东方财富/BaoStock日K缓存；缓存 `{data_path}`；元数据 `{meta_path}`；"
         f"更新模式 {mode}；K线抓取失败 {failures} 只"
     )
     return merged, {
         "source": source,
         "cache_path": str(data_path),
         "cache_meta_path": str(meta_path),
+        "market_cache_path": str(market_cache_db_path(args)),
+        "market_cache_seed_rows": market_cache_rows,
         "failed_codes_path": str(failed_codes_path(args)),
         "cache_update_mode": mode,
         "kline_failures": failures,
@@ -1140,7 +1243,7 @@ def save_report(report: str, args: argparse.Namespace) -> Path:
 
 
 def run_network_scan(args: argparse.Namespace) -> tuple[list[dict], dict]:
-    stock_rows, list_source = fetch_stock_list(limit=args.limit)
+    stock_rows, list_source = fetch_stock_list(args, limit=args.limit)
     if args.symbols:
         wanted = {normalize_code(code) for code in args.symbols.split(",") if code.strip()}
         stock_rows = [row for row in stock_rows if row["code"] in wanted]
@@ -1224,6 +1327,7 @@ def make_self_test_frame() -> "pd.DataFrame":
 
 
 def self_test(args: argparse.Namespace) -> None:
+    args.ignore_market_cache = True
     args.trade_date = "2026-03-30"
     args.min_6m_return_pct = 3
     df = make_self_test_frame()
@@ -1288,6 +1392,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-baostock-fallback", action="store_true", help="disable BaoStock third-source supplement for unresolved symbols")
     parser.add_argument("--baostock-batch-log", type=int, default=50, help="log interval for BaoStock supplement attempts")
     parser.add_argument("--cache-dir", help="default: runs/ashare-volume-doubled-uptrend/kline-cache")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public APIs.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true", help="Skip ashare-kline-sqlite-cache SQLite reads.")
     parser.add_argument("--refresh-cache", action="store_true", help="force one-time full 6-month kline fetch")
     parser.add_argument("--initial-lookback-days", type=int, default=430, help="calendar days to fetch when cache is empty or refreshed")
     parser.add_argument("--incremental-lookback-days", type=int, default=12, help="calendar days to fetch on normal daily runs")
@@ -1314,9 +1424,6 @@ def main() -> None:
     if args.self_test:
         self_test(args)
         return
-
-    if args.no_network and not args.kline_csv:
-        raise SystemExit("--no-network requires --kline-csv")
 
     if args.kline_csv:
         results, meta = run_csv_scan(args)

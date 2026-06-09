@@ -46,7 +46,7 @@ Prefer primary or high-quality sources for fundamentals and announcements. If us
 
 Use a layered data approach. Do not scatter across many platforms unless a layer fails or evidence is missing:
 
-1. **Market data layer - Sina first**: Use Sina Finance `Market_Center.getHQNodeData` as the default free source for A-share turnover ranking, price, change percent, turnover amount, turnover ratio, PE/PB, market cap, and quote time. Sort by `amount` descending and paginate until at least 200 valid A-share records are collected.
+1. **Market data layer - local SQLite first, Sina fallback**: First read `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite`. Use `turnover_top200` for today's turnover top 200 and `daily_kline` for technical indicators. If the database is missing, stale, or incomplete for the requested trade date/code, fall back to Sina Finance `Market_Center.getHQNodeData` and Sina daily K-line APIs. Sort by `amount` descending and paginate until at least 200 valid A-share records are collected.
 2. **Quote fallback - Tencent**: Use Tencent quote APIs only as a backup for batch single-stock quotes after candidate codes are known. Tencent is useful for price/turnover checks, but is not the preferred source for full-market turnover ranking.
 3. **Library fallback**: If Sina fails, try AkShare `stock_zh_a_spot_em`, efinance `get_realtime_quotes`, then Eastmoney `push2` directly. If all fail, use a clearly labeled degraded source such as 52daban top 100.
 4. **Classification layer**: Intersect the turnover top 200 with a local AI hardware upstream/chip/semiconductor-equipment/storage watchlist when available. If no local watchlist exists, classify using the segment list in this skill and verify with company business descriptions.
@@ -54,7 +54,7 @@ Use a layered data approach. Do not scatter across many platforms unless a layer
 
 Operational script:
 
-- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It fetches Sina turnover top 200, intersects the local front-row AI hardware/chip/equipment/storage universe, computes Sina daily-K technical indicators, scores candidates, and writes the final dated Markdown report.
+- Prefer running `ashare-ai-slowbull/scripts/run_slowbull.py` for the normal post-close workflow. It first reads `ashare-kline-sqlite-cache` SQLite turnover/K-line data, falls back to Sina when local rows are unavailable, intersects the local front-row AI hardware/chip/equipment/storage universe, computes technical indicators, scores candidates, and writes the final dated Markdown report.
 - Use `generate_report.py` only when curated `data/meta.json` and `data/candidates.csv` already exist from another trusted workflow.
 - If an external K-line source is slow, prefer Sina `CN_MarketDataService.getKLineData` for lightweight MA/RSI/MACD/KDJ calculation before trying heavier fallback APIs.
 
@@ -207,6 +207,7 @@ Downgrade or exclude when any major risk dominates:
 2. Determine and record `run_time`, `trade_date`, data-source quote timestamp, skill version, stock-pool version, threshold version, and whether fallback data is used.
 3. Classify the sector stage: 主升, 分歧, 修复, or 退潮.
 4. Fetch today's A-share turnover top 200, using Sina Finance as the default source and paginating until 200 valid rows are collected. In normal runs, use `scripts/run_slowbull.py` for this step.
+   - Script default is local-first: `--market-cache-db runs/ashare-kline-sqlite-cache/ashare_kline.sqlite`; pass `--ignore-market-cache` only when diagnosing public-source differences.
 5. Validate that the quote timestamps match the completed `trade_date`; stop or label as degraded if stale.
 6. Use structured market data for analysis, but do not archive raw/process data in `runs/`.
 7. Intersect top 200 with the local/known AI hardware upstream, chip, semiconductor equipment, or storage universe, or classify using the skill's segment list and purity tiers.

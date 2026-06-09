@@ -9,6 +9,7 @@ import datetime as dt
 import json
 import math
 import re
+import sqlite3
 import statistics
 import sys
 import time
@@ -21,6 +22,7 @@ from typing import Iterable
 
 SOURCE_SKILLS = ("ashare-trend-buy", "ashare-ai-slowbull")
 HORIZONS = (1, 5, 10, 20)
+DEFAULT_MARKET_CACHE_DB = Path("runs") / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 
 
 @dataclass
@@ -81,6 +83,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--dry-run", action="store_true", help="Do not write CSV files.")
     parser.add_argument("--no-fetch", action="store_true", help="Do not call remote price APIs.")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public price APIs.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true", help="Skip ashare-kline-sqlite-cache SQLite reads.")
     parser.add_argument("--sleep", type=float, default=0.05, help="Seconds to sleep between price fetches.")
     return parser.parse_args()
 
@@ -286,6 +294,38 @@ def tencent_url(code: str, start: str, end: str) -> str:
     return f"https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={param}"
 
 
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_cached_bars(code: str, start: str, end: str, db_path: Path, *, ignore_cache: bool) -> list[PriceBar]:
+    if ignore_cache or not db_path.exists():
+        return []
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "daily_kline"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT trade_date, close
+            FROM daily_kline
+            WHERE code = ? AND trade_date >= ? AND trade_date <= ?
+            ORDER BY trade_date
+            """,
+            (normalize_code(code), start, end),
+        ).fetchall()
+    bars = []
+    for row in rows:
+        close = to_float(row["close"])
+        if close is not None:
+            bars.append(PriceBar(date=str(row["trade_date"]), close=close))
+    return bars
+
+
 def fetch_tencent_bars(code: str, start: str, end: str, cache_dir: Path | None = None) -> list[PriceBar]:
     cache_path = None
     if cache_dir:
@@ -350,6 +390,8 @@ def calculate_return(
     *,
     no_fetch: bool,
     cache_dir: Path,
+    market_cache_db: Path,
+    ignore_market_cache: bool,
     sleep_seconds: float,
 ) -> ReturnRow:
     row = ReturnRow(pick=pick, as_of=as_of)
@@ -362,7 +404,16 @@ def calculate_return(
         row.status = "missing_base_price"
         row.message = "No base price in source row; remote fetch required."
 
-    if no_fetch:
+    start = pick.base_price_date or pick.run_date
+    bars = fetch_cached_bars(
+        pick.code,
+        start,
+        as_of,
+        market_cache_db,
+        ignore_cache=ignore_market_cache,
+    )
+
+    if no_fetch and not bars:
         local_date = pick.base_price_date or pick.run_date
         if pick.base_price is not None and local_date == as_of:
             row.asof_price = pick.base_price
@@ -392,36 +443,36 @@ def calculate_return(
             row.horizon_returns[horizon] = None
         return row
 
-    start = pick.base_price_date or pick.run_date
-    try:
-        bars = fetch_tencent_bars(pick.code, start, as_of, cache_dir=cache_dir)
-        if sleep_seconds:
-            time.sleep(sleep_seconds)
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
-        if pick.base_price is not None and start == as_of:
-            row.asof_price = pick.base_price
-            row.asof_price_date = start
-            row.return_pct = 0.0
-            row.elapsed_trading_days = 0
-            row.status = "local_base_fallback"
-            row.message = f"Price fetch failed on base/as-of date; used source base price. {exc}"
-            row.daily_rows = [
-                daily_tracking_row(
-                    pick=pick,
-                    date=start,
-                    close=pick.base_price,
-                    base_price=pick.base_price,
-                    elapsed_trading_days=0,
-                    status=row.status,
-                    message=row.message,
-                )
-            ]
-            for horizon in HORIZONS:
-                row.horizon_returns[horizon] = None
+    if not bars:
+        try:
+            bars = fetch_tencent_bars(pick.code, start, as_of, cache_dir=cache_dir)
+            if sleep_seconds:
+                time.sleep(sleep_seconds)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            if pick.base_price is not None and start == as_of:
+                row.asof_price = pick.base_price
+                row.asof_price_date = start
+                row.return_pct = 0.0
+                row.elapsed_trading_days = 0
+                row.status = "local_base_fallback"
+                row.message = f"Price fetch failed on base/as-of date; used source base price. {exc}"
+                row.daily_rows = [
+                    daily_tracking_row(
+                        pick=pick,
+                        date=start,
+                        close=pick.base_price,
+                        base_price=pick.base_price,
+                        elapsed_trading_days=0,
+                        status=row.status,
+                        message=row.message,
+                    )
+                ]
+                for horizon in HORIZONS:
+                    row.horizon_returns[horizon] = None
+                return row
+            row.status = "price_fetch_failed"
+            row.message = str(exc)
             return row
-        row.status = "price_fetch_failed"
-        row.message = str(exc)
-        return row
 
     if not bars:
         row.status = "no_price_bars"
@@ -846,6 +897,9 @@ def main() -> int:
     repo_root = Path(args.repo_root).resolve()
     as_of = args.as_of
     end_date = args.end_date or as_of
+    market_cache_db = Path(args.market_cache_db)
+    if not market_cache_db.is_absolute():
+        market_cache_db = repo_root / market_cache_db
     allowed = {item.strip().upper() for item in args.include_grades.split(",") if item.strip()}
     skills = tuple(args.source_skill or SOURCE_SKILLS)
     source_dirs = discover_source_dirs(repo_root, skills, args.start_date, end_date)
@@ -867,6 +921,8 @@ def main() -> int:
                 as_of,
                 no_fetch=args.no_fetch,
                 cache_dir=cache_dir,
+                market_cache_db=market_cache_db,
+                ignore_market_cache=args.ignore_market_cache,
                 sleep_seconds=args.sleep,
             )
             for pick in picks

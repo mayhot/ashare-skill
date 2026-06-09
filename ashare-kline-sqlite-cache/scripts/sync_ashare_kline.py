@@ -79,6 +79,8 @@ EASTMONEY_POPULARITY_URLS = [
     "https://emappdata.eastmoney.com/stockrank/getAllCurrentList",
     "http://emappdata.eastmoney.com/stockrank/getAllCurrentList",
 ]
+SINA_TURNOVER_TOP200_PAGE_SIZE = 80
+DEFAULT_TURNOVER_LIMIT = 200
 ADJUST_FLAGS = {"none": "0", "qfq": "1", "hfq": "2"}
 DEFAULT_KLINE_SOURCES = ["tencent", "mootdx", "eastmoney", "tickflow", "baostock", "sina", "netease", "akshare"]
 KLINE_SOURCE_SET = {
@@ -94,7 +96,7 @@ KLINE_SOURCE_SET = {
 }
 ROTATE_PRIMARY_AVOID_SOURCES = {"baostock"}
 DEFAULT_POPULARITY_SOURCES = ["eastmoney", "akshare"]
-DEFAULT_POPULARITY_LIMIT = 200
+DEFAULT_POPULARITY_LIMIT = 100
 CSINDEX_ALL_SHARE_CODE = "000985"
 CSINDEX_ALL_SHARE_SOURCE = f"CSI{CSINDEX_ALL_SHARE_CODE}"
 REQUEST_THROTTLE_LOCK = threading.Lock()
@@ -1683,7 +1685,7 @@ def ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]
     conn.commit()
 
 
-def fetch_popularity_top200(
+def fetch_popularity_top100(
     trade_date: str,
     timeout: int,
     limit: int,
@@ -1698,10 +1700,10 @@ def fetch_popularity_top200(
     for source in sources:
         try:
             if source == "akshare":
-                rows = fetch_popularity_top200_akshare(trade_date, limit)
+                rows = fetch_popularity_top100_akshare(trade_date, limit)
                 source_name = "akshare.stock_hot_rank_em"
             elif source == "eastmoney":
-                rows = fetch_popularity_top200_eastmoney(
+                rows = fetch_popularity_top100_eastmoney(
                     trade_date,
                     timeout,
                     limit,
@@ -1723,7 +1725,7 @@ def fetch_popularity_top200(
     raise RuntimeError("; ".join(errors) or "all popularity sources failed")
 
 
-def fetch_popularity_top200_akshare(trade_date: str, limit: int) -> list[dict[str, Any]]:
+def fetch_popularity_top100_akshare(trade_date: str, limit: int) -> list[dict[str, Any]]:
     import akshare as ak  # type: ignore
 
     df = ak.stock_hot_rank_em()
@@ -1766,7 +1768,7 @@ def fetch_popularity_top200_akshare(trade_date: str, limit: int) -> list[dict[st
     return rows[:limit]
 
 
-def fetch_popularity_top200_eastmoney(
+def fetch_popularity_top100_eastmoney(
     trade_date: str,
     timeout: int,
     limit: int,
@@ -1897,6 +1899,65 @@ def normalize_popularity_code(item: dict[str, Any]) -> str:
     return normalize_code(raw)
 
 
+def fetch_turnover_top200(
+    trade_date: str,
+    timeout: int,
+    limit: int,
+    request_attempts: int,
+    retry_base_sleep: float,
+    retry_max_sleep: float,
+    request_delay: float,
+    request_jitter: float,
+) -> list[dict[str, Any]]:
+    rows = []
+    seen: set[str] = set()
+    max_pages = max(1, (limit + SINA_TURNOVER_TOP200_PAGE_SIZE - 1) // SINA_TURNOVER_TOP200_PAGE_SIZE)
+    for page in range(1, max_pages + 1):
+        payload = request_json(
+            SINA_LIST_URL.format(page=page),
+            timeout,
+            request_attempts,
+            retry_base_sleep,
+            retry_max_sleep,
+            request_delay,
+            request_jitter,
+        )
+        if not isinstance(payload, list) or not payload:
+            break
+        for raw in payload:
+            if not isinstance(raw, dict):
+                continue
+            code = normalize_code(raw.get("code"))
+            if not code or code in seen:
+                continue
+            seen.add(code)
+            rows.append(
+                {
+                    "trade_date": trade_date,
+                    "rank": len(rows) + 1,
+                    "code": code,
+                    "name": str(raw.get("name") or "").strip(),
+                    "exchange": exchange_for_code(code),
+                    "amount": to_float(raw.get("amount")),
+                    "volume": to_float(raw.get("volume")),
+                    "turnover_ratio": to_float(raw.get("turnoverratio")),
+                    "latest_price": to_float(raw.get("trade")),
+                    "pct_chg": to_float(raw.get("changepercent")),
+                    "source": "sina.market_center.hub_hs_a.sort=amount",
+                    "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                    "raw_json": json.dumps(raw, ensure_ascii=False, default=str),
+                }
+            )
+            if len(rows) >= limit:
+                break
+    if not rows:
+        return rows
+    rows.sort(key=lambda item: item.get("amount") or 0.0, reverse=True)
+    for rank, row in enumerate(rows[:limit], start=1):
+        row["rank"] = rank
+    return rows[:limit]
+
+
 def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
@@ -1976,7 +2037,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_daily_kline_code ON daily_kline(code)")
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS popularity_top200 (
+        CREATE TABLE IF NOT EXISTS popularity_top100 (
             trade_date TEXT NOT NULL,
             rank INTEGER NOT NULL,
             code TEXT NOT NULL,
@@ -1993,7 +2054,29 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_popularity_top200_code ON popularity_top200(code)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_popularity_top100_code ON popularity_top100(code)")
+    conn.execute("DELETE FROM popularity_top100 WHERE rank > ?", (DEFAULT_POPULARITY_LIMIT,))
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS turnover_top200 (
+            trade_date TEXT NOT NULL,
+            rank INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            name TEXT,
+            exchange TEXT,
+            amount REAL,
+            volume REAL,
+            turnover_ratio REAL,
+            latest_price REAL,
+            pct_chg REAL,
+            source TEXT,
+            fetched_at TEXT NOT NULL,
+            raw_json TEXT,
+            PRIMARY KEY (trade_date, rank)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_turnover_top200_code ON turnover_top200(code)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS sync_runs (
@@ -2385,8 +2468,8 @@ def build_fetch_jobs(
     return jobs
 
 
-def replace_popularity_top200(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
-    conn.execute("DELETE FROM popularity_top200 WHERE trade_date = ?", (trade_date,))
+def replace_popularity_top100(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
+    conn.execute("DELETE FROM popularity_top100 WHERE trade_date = ?", (trade_date,))
     if not rows:
         conn.commit()
         return 0
@@ -2408,7 +2491,41 @@ def replace_popularity_top200(conn: sqlite3.Connection, trade_date: str, rows: l
     updates = ",".join(f"{col}=excluded.{col}" for col in columns if col not in ("trade_date", "rank"))
     conn.executemany(
         f"""
-        INSERT INTO popularity_top200 ({",".join(columns)})
+        INSERT INTO popularity_top100 ({",".join(columns)})
+        VALUES ({placeholders})
+        ON CONFLICT(trade_date, rank) DO UPDATE SET {updates}
+        """,
+        [tuple(row.get(col) for col in columns) for row in rows],
+    )
+    conn.commit()
+    return len(rows)
+
+
+def replace_turnover_top200(conn: sqlite3.Connection, trade_date: str, rows: list[dict[str, Any]]) -> int:
+    conn.execute("DELETE FROM turnover_top200 WHERE trade_date = ?", (trade_date,))
+    if not rows:
+        conn.commit()
+        return 0
+    columns = [
+        "trade_date",
+        "rank",
+        "code",
+        "name",
+        "exchange",
+        "amount",
+        "volume",
+        "turnover_ratio",
+        "latest_price",
+        "pct_chg",
+        "source",
+        "fetched_at",
+        "raw_json",
+    ]
+    placeholders = ",".join("?" for _ in columns)
+    updates = ",".join(f"{col}=excluded.{col}" for col in columns if col not in ("trade_date", "rank"))
+    conn.executemany(
+        f"""
+        INSERT INTO turnover_top200 ({",".join(columns)})
         VALUES ({placeholders})
         ON CONFLICT(trade_date, rank) DO UPDATE SET {updates}
         """,
@@ -2536,7 +2653,12 @@ def prefix_counts(stocks: list[dict[str, Any]]) -> dict[str, int]:
 
 
 def popularity_count_for_date(conn: sqlite3.Connection, trade_date: str) -> int:
-    row = conn.execute("SELECT COUNT(*) FROM popularity_top200 WHERE trade_date = ?", (trade_date,)).fetchone()
+    row = conn.execute("SELECT COUNT(*) FROM popularity_top100 WHERE trade_date = ?", (trade_date,)).fetchone()
+    return int(row[0] or 0)
+
+
+def turnover_top200_count_for_date(conn: sqlite3.Connection, trade_date: str) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM turnover_top200 WHERE trade_date = ?", (trade_date,)).fetchone()
     return int(row[0] or 0)
 
 
@@ -2675,6 +2797,23 @@ def enforce_time_guard(args: argparse.Namespace) -> None:
         )
 
 
+def current_trading_day_snapshot_date(args: argparse.Namespace) -> str | None:
+    """Return the trade_date snapshot target, or None when ranking snapshots should be skipped.
+
+    Ranking tables are explicitly kept as same-day-only snapshots and never backfilled.
+    """
+    if args.trade_date != now_china().date().isoformat():
+        return None
+    current = now_china()
+    snapshot_minute_hour, snapshot_minute = same_day_min_run_time(args)
+    snapshot_time = current.replace(
+        hour=snapshot_minute_hour, minute=snapshot_minute, second=0, microsecond=0
+    )
+    if current < snapshot_time:
+        return None
+    return args.trade_date
+
+
 def check_database_writable(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -2689,6 +2828,12 @@ def check_database_writable(conn: sqlite3.Connection) -> None:
 def sync(args: argparse.Namespace) -> dict[str, Any]:
     run_started = time.time()
     enforce_time_guard(args)
+    effective_popularity_limit = max(1, min(int(args.popularity_limit), DEFAULT_POPULARITY_LIMIT))
+    if int(args.popularity_limit) > DEFAULT_POPULARITY_LIMIT:
+        log(
+            "popularity: requested limit "
+            f"{args.popularity_limit} capped to {DEFAULT_POPULARITY_LIMIT}"
+        )
     db_path = Path(args.db)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(db_path)) as conn:
@@ -2764,10 +2909,12 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             )
             log(f"seed csv: imported_rows={seed_rows_imported:,}")
 
+        ranking_trade_date = current_trading_day_snapshot_date(args)
+
         popularity_count = 0
         popularity_source = "skipped"
         popularity_error = ""
-        if not args.skip_popularity:
+        if not args.skip_popularity and ranking_trade_date:
             try:
                 popularity_sources = parse_sources(
                     args.popularity_sources,
@@ -2775,10 +2922,10 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     {"eastmoney", "akshare"},
                 )
                 log(f"popularity sources: order={','.join(popularity_sources)}")
-                popularity_rows, popularity_source = fetch_popularity_top200(
+                popularity_rows, popularity_source = fetch_popularity_top100(
                     args.trade_date,
                     args.request_timeout,
-                    args.popularity_limit,
+                    effective_popularity_limit,
                     popularity_sources,
                     args.request_attempts,
                     args.retry_base_sleep,
@@ -2786,12 +2933,52 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
                     args.request_delay,
                     args.request_jitter,
                 )
-                popularity_count = replace_popularity_top200(conn, args.trade_date, popularity_rows)
+                popularity_count = replace_popularity_top100(conn, args.trade_date, popularity_rows)
                 log(f"popularity: rows={popularity_count} source={popularity_source}")
             except Exception as exc:
                 popularity_error = str(exc)
-                replace_popularity_top200(conn, args.trade_date, [])
+                replace_popularity_top100(conn, args.trade_date, [])
                 log(f"popularity: unavailable error={popularity_error}")
+        elif not args.skip_popularity:
+            if ranking_trade_date is None and args.trade_date != now_china().date().isoformat():
+                popularity_source = "skipped-non-current-trade-date"
+            elif ranking_trade_date is None:
+                popularity_source = "skipped-before-market-window"
+            else:
+                popularity_source = "skipped"
+
+        turnover_count = 0
+        turnover_error = ""
+        turnover_source = "skipped"
+        if not args.skip_turnover_top200 and ranking_trade_date:
+            try:
+                turnover_rows = fetch_turnover_top200(
+                    args.trade_date,
+                    args.request_timeout,
+                    args.turnover_limit,
+                    args.request_attempts,
+                    args.retry_base_sleep,
+                    args.retry_max_sleep,
+                    args.request_delay,
+                    args.request_jitter,
+                )
+                turnover_count = replace_turnover_top200(conn, args.trade_date, turnover_rows)
+                turnover_source = "sina.market_center.hub_hs_a.sort=amount"
+                log(f"turnover_top200: rows={turnover_count} source=sina.market_center.hub_hs_a.sort=amount")
+            except Exception as exc:
+                turnover_error = str(exc)
+                replace_turnover_top200(conn, args.trade_date, [])
+                log(f"turnover_top200: unavailable error={turnover_error}")
+                turnover_source = "unavailable"
+        elif not args.skip_turnover_top200:
+            if ranking_trade_date is None and args.trade_date != now_china().date().isoformat():
+                turnover_source = "skipped-non-current-trade-date"
+            elif ranking_trade_date is None:
+                turnover_source = "skipped-before-market-window"
+            else:
+                turnover_source = "skipped"
+            # no table writes for non-current snapshots
+            turnover_count = 0
 
         rows_upserted = 0
         failures: list[tuple[str, str, str]] = []
@@ -2903,6 +3090,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             f"seed_rows_imported={seed_rows_imported}; "
             f"popularity_count={popularity_count}; "
             f"popularity_source={popularity_source}; "
+            f"turnover_count={turnover_count}; "
+            f"turnover_source={turnover_source}; "
             f"max_workers={args.max_workers}; "
             f"request_attempts={args.request_attempts}; "
             f"retry_base_sleep={args.retry_base_sleep}; "
@@ -2917,6 +3106,8 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
         )
         if popularity_error:
             notes += f"; popularity_error={popularity_error}"
+        if turnover_error:
+            notes += f"; turnover_error={turnover_error}"
         finish_run(
             conn,
             run_id,
@@ -2956,6 +3147,13 @@ def sync(args: argparse.Namespace) -> dict[str, Any]:
             "popularity_count": popularity_count,
             "popularity_source": popularity_source,
             "popularity_error": popularity_error,
+            "turnover_count": turnover_count,
+            "turnover_source": (
+                turnover_source
+                if not args.skip_turnover_top200
+                else "skipped"
+            ),
+            "turnover_error": turnover_error,
             "retained_trade_days": trade_days,
             "retention_applied": retention_applied,
             "cutoff_trade_date": cutoff,
@@ -2974,6 +3172,7 @@ def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
         initial_coverage = kline_coverage_for_date(conn, args.trade_date)
         initial_missing = missing_kline_stocks(conn, args.trade_date)
         initial_popularity_count = popularity_count_for_date(conn, args.trade_date)
+        initial_turnover_count = turnover_top200_count_for_date(conn, args.trade_date)
         open_runs = unfinished_run_count(conn)
         if initial_coverage["universe_count"] <= 0:
             raise SystemExit(
@@ -2985,12 +3184,15 @@ def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
         "repair: preflight "
         f"trade_date={args.trade_date} universe={initial_coverage['universe_count']} "
         f"cached={initial_coverage['cached_count']} missing={initial_coverage['missing_count']} "
-        f"popularity_rows={initial_popularity_count} unfinished_runs={open_runs}"
+        f"popularity_rows={initial_popularity_count} turnover_rows={initial_turnover_count} "
+        f"unfinished_runs={open_runs}"
     )
     if initial_missing:
         log(f"repair: missing_by_prefix={prefix_counts(initial_missing)}")
-    if initial_popularity_count:
-        log("repair: preserving existing popularity rows; K-line repair batches force --skip-popularity")
+        if initial_popularity_count:
+            log("repair: preserving existing popularity rows; K-line repair batches force --skip-popularity")
+        if initial_turnover_count:
+            log("repair: preserving existing turnover-top200 rows; K-line repair batches force --skip-turnover-top200")
     if open_runs:
         log("repair: unfinished sync_runs exist; verify no stale Python sync process is still running")
 
@@ -3019,6 +3221,7 @@ def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
         batch_args.symbols = batch_codes
         batch_args.symbols_only = True
         batch_args.skip_popularity = True
+        batch_args.skip_turnover_top200 = True
         batch_args.limit = None
         batch_args.seed_kline_csv = None
         batch_args.seed_universe_only = False
@@ -3069,6 +3272,7 @@ def repair_missing(args: argparse.Namespace) -> dict[str, Any]:
         "initial_coverage": initial_coverage,
         "final_coverage": final_coverage,
         "initial_popularity_count": initial_popularity_count,
+        "initial_turnover_count": initial_turnover_count,
         "unfinished_runs": open_runs,
         "batches": batch_summaries,
         "total_rows_upserted": total_rows_upserted,
@@ -3347,12 +3551,43 @@ def self_test() -> None:
                     "raw_json": "{}",
                 }
             ]
-            assert replace_popularity_top200(conn, "2026-06-04", popularity_rows) == 1
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 1
-            assert replace_popularity_top200(conn, "2026-06-05", []) == 0
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 1
-            assert replace_popularity_top200(conn, "2026-06-04", []) == 0
-            assert conn.execute("SELECT COUNT(*) FROM popularity_top200").fetchone()[0] == 0
+            assert replace_popularity_top100(conn, "2026-06-04", popularity_rows) == 1
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 1
+            assert replace_popularity_top100(conn, "2026-06-05", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 1
+            assert replace_popularity_top100(conn, "2026-06-04", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM popularity_top100").fetchone()[0] == 0
+            turnover_rows = [
+                {
+                    "trade_date": "2026-06-04",
+                    "rank": 1,
+                    "code": "000001",
+                    "name": "sample",
+                    "exchange": "SZ",
+                    "amount": 10000.0,
+                    "volume": 1200.0,
+                    "turnover_ratio": 2.5,
+                    "latest_price": 10.5,
+                    "pct_chg": 1.2,
+                    "source": "self-test",
+                    "fetched_at": now_china().strftime("%Y-%m-%d %H:%M:%S%z"),
+                    "raw_json": "{}",
+                }
+            ]
+            assert replace_turnover_top200(conn, "2026-06-04", turnover_rows) == 1
+            assert conn.execute("SELECT COUNT(*) FROM turnover_top200").fetchone()[0] == 1
+            assert turnover_top200_count_for_date(conn, "2026-06-04") == 1
+            assert replace_turnover_top200(conn, "2026-06-05", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM turnover_top200").fetchone()[0] == 1
+            assert replace_turnover_top200(conn, "2026-06-04", []) == 0
+            assert conn.execute("SELECT COUNT(*) FROM turnover_top200").fetchone()[0] == 0
+            assert current_trading_day_snapshot_date(
+                argparse.Namespace(
+                    trade_date=(now_china().date() - timedelta(days=1)).isoformat(),
+                    min_run_time="15:30",
+                    min_run_hour=None,
+                )
+            ) is None
             seed_path = Path(tmp) / "seed.csv"
             seed_path.write_text(
                 "code,date,open,close,high,low,volume,amount,name\n"
@@ -3454,12 +3689,19 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--refresh-universe", action="store_true", help="force refresh CSI All Share stock universe even outside the monthly refresh day")
     parser.add_argument("--official-universe-refresh-day", type=int, default=1, help="day of month to refresh official CSI All Share universe")
-    parser.add_argument("--skip-popularity", action="store_true", help="skip current-day popularity top 200 sync")
+    parser.add_argument("--skip-popularity", action="store_true", help="skip current-day popularity top 100 sync")
+    parser.add_argument("--skip-turnover-top200", action="store_true", help="skip current-day turnover top 200 sync")
     parser.add_argument(
         "--popularity-limit",
         type=int,
         default=DEFAULT_POPULARITY_LIMIT,
-        help="number of popularity rows to keep for the current trade date; default 200",
+        help="number of popularity rows to keep for the current trade date; default 100",
+    )
+    parser.add_argument(
+        "--turnover-limit",
+        type=int,
+        default=DEFAULT_TURNOVER_LIMIT,
+        help="number of turnover rows to keep for the current trade date; default 200",
     )
     parser.add_argument("--popularity-sources", default="auto", help="comma-separated popularity source order: auto, eastmoney,akshare")
     parser.add_argument("--max-workers", type=int, default=4)

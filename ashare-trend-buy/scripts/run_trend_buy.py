@@ -3,6 +3,7 @@ import argparse
 import json
 import math
 import random
+import sqlite3
 import sys
 import time
 import urllib.parse
@@ -14,12 +15,16 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 RUN_DIR = None
 RUNS_ROOT = None
 SOURCE_TOP200 = None
 SCREENING_DATE = None
 NO_NETWORK = False
+MARKET_CACHE_DB = DEFAULT_MARKET_CACHE_DB
+IGNORE_MARKET_CACHE = False
 CANDIDATE_SOURCE_LABEL = None
+HOT_SOURCE_LABEL = None
 KLINE_SOURCE_LABEL = "东方财富日K接口"
 KLINE_BACKEND = "eastmoney"
 TURNOVER_TOP_N = 200
@@ -265,6 +270,130 @@ def eastmoney_rank_secid(sc: str) -> str:
     return f"{market}.{code}"
 
 
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def read_cached_turnover_top200() -> list[dict]:
+    if IGNORE_MARKET_CACHE or SOURCE_TOP200 is not None or not MARKET_CACHE_DB.exists():
+        return []
+    with sqlite3.connect(str(MARKET_CACHE_DB.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "turnover_top200"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT t.rank, t.code, t.name, t.amount, t.volume, t.turnover_ratio,
+                   t.latest_price, t.pct_chg, t.fetched_at, u.total_mv
+            FROM turnover_top200 t
+            LEFT JOIN stock_universe u ON u.code = t.code
+            WHERE t.trade_date = ?
+            ORDER BY t.rank
+            LIMIT ?
+            """,
+            (SCREENING_DATE, TURNOVER_TOP_N),
+        ).fetchall()
+    if len(rows) < TURNOVER_TOP_N:
+        return []
+    return [
+        {
+            "rank": int(row["rank"]),
+            "symbol": stock_symbol(str(row["code"])),
+            "code": str(row["code"]),
+            "name": row["name"] or "",
+            "trade": fnum(row["latest_price"]),
+            "changepercent": fnum(row["pct_chg"]),
+            "turnoverratio": fnum(row["turnover_ratio"]),
+            "amount_yi": fnum(row["amount"]) / 100000000,
+            "mktcap_yi": fnum(row["total_mv"]) / 100000000,
+            "ticktime": row["fetched_at"] or SCREENING_DATE or "",
+        }
+        for row in rows
+    ]
+
+
+def read_cached_hot_top100() -> list[dict]:
+    if IGNORE_MARKET_CACHE or not MARKET_CACHE_DB.exists():
+        return []
+    with sqlite3.connect(str(MARKET_CACHE_DB.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "popularity_top100"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT p.rank, p.code, p.name, p.latest_price, p.pct_chg,
+                   p.fetched_at, u.amount, u.turnover, u.total_mv
+            FROM popularity_top100 p
+            LEFT JOIN stock_universe u ON u.code = p.code
+            WHERE p.trade_date = ?
+            ORDER BY p.rank
+            LIMIT ?
+            """,
+            (SCREENING_DATE, HOT_TOP_N),
+        ).fetchall()
+    if len(rows) < HOT_TOP_N:
+        return []
+    return [
+        {
+            "rank": int(row["rank"]),
+            "source_rank": int(row["rank"]),
+            "hot_rank": int(row["rank"]),
+            "turnover_rank": "",
+            "rank_label": "人气排名",
+            "source_type": "hot_top100",
+            "source_title": "人气榜（热榜）前100",
+            "symbol": stock_symbol(str(row["code"])),
+            "code": str(row["code"]),
+            "name": row["name"] or "",
+            "trade": fnum(row["latest_price"]),
+            "changepercent": fnum(row["pct_chg"]),
+            "turnoverratio": fnum(row["turnover"]),
+            "amount_yi": fnum(row["amount"]) / 100000000,
+            "mktcap_yi": fnum(row["total_mv"]) / 100000000,
+            "ticktime": row["fetched_at"] or SCREENING_DATE or "",
+        }
+        for row in rows
+    ]
+
+
+def read_cached_kline(symbol: str) -> tuple[list[dict], dict] | None:
+    if IGNORE_MARKET_CACHE or not MARKET_CACHE_DB.exists():
+        return None
+    code = symbol[-6:]
+    with sqlite3.connect(str(MARKET_CACHE_DB.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "daily_kline"):
+            return None
+        rows = conn.execute(
+            """
+            SELECT trade_date, open, close, high, low, volume, source
+            FROM daily_kline
+            WHERE code = ? AND trade_date <= ?
+            ORDER BY trade_date DESC
+            LIMIT 300
+            """,
+            (code, SCREENING_DATE),
+        ).fetchall()
+    if len(rows) < 60:
+        return None
+    krows = [
+        {
+            "date": row["trade_date"],
+            "open": fnum(row["open"]),
+            "close": fnum(row["close"]),
+            "high": fnum(row["high"]),
+            "low": fnum(row["low"]),
+            "volume": fnum(row["volume"]),
+        }
+        for row in reversed(rows)
+    ]
+    return krows, {"source": "ashare-kline-sqlite-cache SQLite daily_kline"}
+
+
 def fetch_sina_top200():
     rows = []
     seen = set()
@@ -448,6 +577,11 @@ def fetch_eastmoney_hot100():
 
 def read_top200():
     global CANDIDATE_SOURCE_LABEL, KLINE_BACKEND, KLINE_SOURCE_LABEL
+    cached_rows = read_cached_turnover_top200()
+    if cached_rows:
+        CANDIDATE_SOURCE_LABEL = "ashare-kline-sqlite-cache SQLite turnover_top200"
+        KLINE_SOURCE_LABEL = "ashare-kline-sqlite-cache SQLite daily_kline (local first; network fallback)"
+        return cached_rows
     if SOURCE_TOP200 is None:
         try:
             rows = fetch_sina_top200()
@@ -506,6 +640,12 @@ def read_turnover_top200():
 
 
 def read_hot_top100():
+    global HOT_SOURCE_LABEL
+    cached_rows = read_cached_hot_top100()
+    if cached_rows:
+        HOT_SOURCE_LABEL = "ashare-kline-sqlite-cache SQLite popularity_top100"
+        return cached_rows
+    HOT_SOURCE_LABEL = "东方财富个股人气榜 getAllCurrentList"
     return fetch_eastmoney_hot100()
 
 
@@ -539,7 +679,7 @@ def read_candidate_pools():
             {
                 "key": "hot_top100",
                 "title": "人气榜（热榜）前100",
-                "source_label": "东方财富个股人气榜 getAllCurrentList",
+                "source_label": HOT_SOURCE_LABEL or "东方财富个股人气榜 getAllCurrentList",
                 "rows": rows,
                 "error": "",
             }
@@ -563,6 +703,12 @@ def read_candidate_pools():
 
 def fetch_kline(symbol: str):
     global KLINE_BACKEND, KLINE_SOURCE_LABEL
+    cached = read_cached_kline(symbol)
+    if cached:
+        KLINE_SOURCE_LABEL = "ashare-kline-sqlite-cache SQLite daily_kline (local first; network fallback)"
+        return cached
+    if NO_NETWORK:
+        raise RuntimeError("network disabled and local SQLite K-line unavailable")
     if KLINE_BACKEND == "eastmoney":
         try:
             return fetch_eastmoney_kline(symbol)
@@ -1436,15 +1582,26 @@ def parse_args():
     parser.add_argument("--request-backoff", type=float, default=1.0, help="Base seconds for exponential retry backoff.")
     parser.add_argument("--request-jitter", type=float, default=0.35, help="Random extra seconds added to retries and K-line pacing.")
     parser.add_argument("--kline-request-delay", type=float, default=0.35, help="Base seconds to wait before each K-line HTTP request.")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public APIs.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true", help="Skip ashare-kline-sqlite-cache SQLite reads.")
     parser.add_argument("--no-network", action="store_true", help="Disable network access.")
     return parser.parse_args()
 
 
 def configure(args):
     global RUN_DIR, RUNS_ROOT, SOURCE_TOP200, SCREENING_DATE, NO_NETWORK
+    global MARKET_CACHE_DB, IGNORE_MARKET_CACHE
     global REQUEST_RETRIES, REQUEST_BACKOFF, REQUEST_JITTER, KLINE_REQUEST_DELAY
     SCREENING_DATE = args.date
     NO_NETWORK = bool(args.no_network)
+    MARKET_CACHE_DB = Path(args.market_cache_db)
+    if not MARKET_CACHE_DB.is_absolute():
+        MARKET_CACHE_DB = ROOT / MARKET_CACHE_DB
+    IGNORE_MARKET_CACHE = bool(args.ignore_market_cache)
     REQUEST_RETRIES = max(1, int(args.request_retries or 1))
     REQUEST_BACKOFF = max(0.0, float(args.request_backoff or 0.0))
     REQUEST_JITTER = max(0.0, float(args.request_jitter or 0.0))

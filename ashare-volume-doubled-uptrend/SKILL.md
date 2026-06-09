@@ -23,6 +23,8 @@ python ashare-volume-doubled-uptrend/scripts/run_volume_doubled_uptrend.py --tra
 - `--runs-dir runs`：报告输出根目录。
 - `--refresh-cache`：强制重新一次性拉取近 6 个月全 A 日 K，并覆盖共享缓存。
 - `--cache-dir PATH`：自定义 K 线缓存目录；默认 `runs/ashare-volume-doubled-uptrend/kline-cache/`。
+- `--market-cache-db runs/ashare-kline-sqlite-cache/ashare_kline.sqlite`：优先读取 `ashare-kline-sqlite-cache` 的中央 SQLite；股票池用 `stock_universe`，日 K 用 `daily_kline`，不足时再按原逻辑联网补。
+- `--ignore-market-cache`：诊断本 skill 自有缓存或公网源时跳过中央 SQLite。
 - `--initial-lookback-days 430`：缓存为空或强制刷新时的全量拉取自然日跨度。
 - `--incremental-lookback-days 12`：缓存存在时的增量更新自然日跨度；正常每日运行只补最近/当日日 K。
 - `--batch-size 100`：首次全量或续跑全量缓存时，每完成一批股票就持久化一次缓存；默认每 100 只落盘。
@@ -61,8 +63,8 @@ SQLite cache update:
 
 ## K线缓存策略
 
-1. 首次联网执行时，如果 `kline-cache/daily_kline_6m.sqlite` 不存在，脚本会先尝试从旧 `daily_kline_6m.csv` 自动迁移；没有旧缓存时再一次性拉取全 A 近 6 个月所需日 K，并写入共享缓存。
-2. 后续每天执行时，优先读取共享缓存，只联网拉取最近/当日 K 线窗口，用新数据与缓存按 `code,date` 去重合并。
+1. 首次执行时，脚本先尝试读取 `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` 的 `stock_universe` 和 `daily_kline` 作为中央缓存种子，并写入本 skill 的 `kline-cache/daily_kline_6m.sqlite`；中央缓存、本地 SQLite 或旧 `daily_kline_6m.csv` 都不足时，才一次性拉取全 A 近 6 个月所需日 K。
+2. 后续每天执行时，优先读取中央 SQLite 和本 skill 共享缓存，只对缺失或过期的代码联网拉取最近/当日 K 线窗口，用新数据与缓存按 `code,date` 去重合并。
 3. 首次全量或 `--refresh-cache` 续跑时必须分批持久化；默认每 100 只股票增量写入 `daily_kline_6m.sqlite` 并更新 `daily_kline_6m.meta.json`。
 4. 如果全量抓取中断，下一次带 `--refresh-cache` 运行时读取已有缓存，跳过已经有上市后 K 线且最新日期达标的股票，只继续补剩余标的；上市时间不足导致不足 90 根的股票不再反复补采。
 5. 每次增量后裁剪缓存，只保留约 6 个月分析所需窗口，避免缓存无限增长。
@@ -75,7 +77,7 @@ SQLite cache update:
 ## 数据纪律
 
 1. 先确认 `trade_date`，不要硬编码日期。
-2. 真实全 A 筛选优先使用东方财富全 A 列表；若东方财富列表接口不可用，回退到新浪全 A 列表。日 K 优先使用腾讯接口，失败时再尝试东方财富日 K，最后用 BaoStock 补采失败代码。先维护共享 K 线缓存，再从缓存参与筛选；如果接口不可用，明确说明数据缺口。
+2. 真实全 A 筛选优先使用 `ashare-kline-sqlite-cache` 的 `stock_universe`；本地不可用时再使用东方财富全 A 列表，若东方财富列表接口不可用，回退到新浪全 A 列表。日 K 优先读取 `ashare-kline-sqlite-cache.daily_kline`，不足时再使用腾讯接口，失败时再尝试东方财富日 K，最后用 BaoStock 补采失败代码。先维护共享 K 线缓存，再从缓存参与筛选；如果接口不可用，明确说明数据缺口。
 3. 本地 CSV 必须至少包含：`code,date,open,high,low,close,volume`；可选 `name,amount,pct_chg`。
 4. 缓存层面对上市时间不足的股票，只要能抓到上市后的日 K 且最新日期到达筛选日即可保留；筛选层仍至少需要 90 根日 K 才能判断 6 个月趋势。
 5. 最新 K 线日期如果早于 `trade_date`，必须在报告中说明，不得静默当作当日完整结果。

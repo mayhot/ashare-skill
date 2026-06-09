@@ -75,7 +75,7 @@ Use each source row's own recommendation base price when available:
 - `close` for `ashare-trend-buy`
 - `trade` for `ashare-ai-slowbull`
 
-Use the source row's `date` field as the base price date when available; otherwise use the run folder date. Fetch forward-adjusted daily K-line data from Tencent to find the latest close on or before `--as-of`.
+Use the source row's `date` field as the base price date when available; otherwise use the run folder date. First read `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` `daily_kline` rows for the base-date through `--as-of` window. If the local SQLite cache is missing or has no usable bars, fetch forward-adjusted daily K-line data from Tencent to find the latest close on or before `--as-of`.
 
 Calculate:
 
@@ -108,7 +108,8 @@ For a full slowbull-style A/B/C review, run with `--source-skill ashare-ai-slowb
 - When the user asks to execute a backtest without specifying dates, exclude the current day's source folders and pass `--end-date` as the latest date before `--as-of`. Only include same-day source folders when the user explicitly requests it.
 - Use `--source-skill ashare-trend-buy` or `--source-skill ashare-ai-slowbull` to process one skill.
 - Use `--dry-run` to inspect extraction and calculations without writing CSV files.
-- Use `--no-fetch` for offline validation. This only uses local base prices and marks forward returns as unavailable unless the as-of date equals the local price date.
+- Use `--market-cache-db runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` to point at a non-default central cache, or `--ignore-market-cache` to diagnose Tencent/API differences.
+- Use `--no-fetch` for offline validation. It still allows local SQLite `daily_kline` reads; if neither SQLite bars nor same-day local base prices are available, forward returns are marked unavailable.
 - Keep generated CSV files under the original source date folders so later review can start from the recommendation day.
 
 ## Quality Checks

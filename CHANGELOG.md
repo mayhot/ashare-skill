@@ -2,6 +2,8 @@
 
 ## 2026-06-09
 
+- skills: Changed `ashare-kline-sqlite-cache` popularity snapshots from top 200 to top 100, renamed the SQLite table to `popularity_top100`, and removed old `popularity_top200` compatibility.
+- skills: Updated market-data-consuming skills to prefer `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` for turnover/popularity rankings, stock universe, daily K-lines, and recommendation return prices before falling back to public APIs.
 - runs: Added the 2026-06-08 `ashare-volume-doubled-uptrend` run artifact.
 - skills: Added TickFlow as a default `ashare-kline-sqlite-cache` K-line fallback source using free historical daily K-lines, including Beijing exchange symbol support.
 - skills: Added `ashare-kline-sqlite-cache/scripts/repair_missing_kline_grid.py` to query `stock_universe x daily_kline.trade_date` gaps and optionally backfill exact missing K-line cells.
@@ -9,7 +11,9 @@
 - skills: Added BaoStock as a default `ashare-kline-sqlite-cache` K-line fallback source and optional token-backed Tushare Pro daily K-line support.
 - skills: Added `ashare-kline-sqlite-cache --kline-source-strategy rotate|fallback` so full-market K-line syncs can distribute first-source requests across vendors while preserving per-symbol fallback coverage.
 - skills: Added mootdx/TDX TCP daily K-line support to `ashare-kline-sqlite-cache` as a default rotated source for unadjusted K-line fetches.
-- skills: Changed `ashare-kline-sqlite-cache` popularity snapshots to fetch the post-close top 200 by default and store them in `popularity_top200`.
+- skills: Changed `ashare-kline-sqlite-cache` popularity snapshots to fetch the post-close top 100 by default and store them in `popularity_top100`.
+- skills: Added `ashare-kline-sqlite-cache` separate turnover top 200 extraction from Sina Market Center (`sort=amount`) and dedicated `turnover_top200` persistence to SQLite.
+- skills: Changed `ashare-kline-sqlite-cache` ranking sync to only refresh popularity/turnover top 200 snapshots for current-trade-date runs in/after the same-day window; historical `--trade-date` calls no longer backfill, and replacements are scoped to that date only.
 - skills: Updated `ashare-kline-sqlite-cache` documentation with the expanded K-line source order and Tushare token usage notes.
 
 ## 2026-06-08
