@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import time
 import urllib.request
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from typing import Any
 
 
 CN_TZ = timezone(timedelta(hours=8))
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 USER_AGENT = {"User-Agent": "Mozilla/5.0"}
 GRADE_ORDER = {"A": 0, "B": 1, "C": 2, "剔除": 3}
 TIER_BASE = {"S": 19, "A": 16, "B": 12}
@@ -95,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run ashare-ai-slowbull screen.")
     parser.add_argument("--trade-date", help="Trading date, default: China local date.")
     parser.add_argument("--output-root", default="runs/ashare-ai-slowbull")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public APIs.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true")
     parser.add_argument("--skip-post-close-check", action="store_true")
     return parser.parse_args()
 
@@ -122,6 +131,94 @@ def fetch_text(url: str, timeout: int = 10, tries: int = 3) -> str:
 
 def fetch_json(url: str, timeout: int = 12, tries: int = 3) -> Any:
     return json.loads(fetch_text(url, timeout=timeout, tries=tries))
+
+
+def stock_symbol(code: str) -> str:
+    return ("sh" if code.startswith(("6", "9")) else "sz") + code
+
+
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_cached_turnover_top200(db_path: Path, trade_date: str) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "turnover_top200"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT t.rank, t.code, t.name, t.amount, t.volume, t.turnover_ratio,
+                   t.latest_price, t.pct_chg, t.fetched_at, u.total_mv
+            FROM turnover_top200 t
+            LEFT JOIN stock_universe u ON u.code = t.code
+            WHERE t.trade_date = ?
+            ORDER BY t.rank
+            LIMIT 200
+            """,
+            (trade_date,),
+        ).fetchall()
+    if len(rows) < 200:
+        return []
+    return [
+        {
+            "rank": int(row["rank"]),
+            "symbol": stock_symbol(str(row["code"])),
+            "code": str(row["code"]),
+            "name": row["name"] or "",
+            "trade": row["latest_price"] or 0,
+            "changepercent": row["pct_chg"] or 0,
+            "turnoverratio": row["turnover_ratio"] or 0,
+            "amount": row["amount"] or 0,
+            "mktcap": (row["total_mv"] or 0) / 10000,
+            "ticktime": row["fetched_at"] or trade_date,
+        }
+        for row in rows
+    ]
+
+
+def fetch_cached_daily_k(
+    db_path: Path,
+    symbol: str,
+    trade_date: str,
+    limit: int = 90,
+) -> list[dict[str, float | str]]:
+    if not db_path.exists():
+        return []
+    code = symbol[-6:]
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "daily_kline"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT trade_date, open, high, low, close, volume
+            FROM daily_kline
+            WHERE code = ? AND trade_date <= ?
+            ORDER BY trade_date DESC
+            LIMIT ?
+            """,
+            (code, trade_date, limit),
+        ).fetchall()
+    if len(rows) < 35:
+        return []
+    return [
+        {
+            "date": row["trade_date"],
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+            "volume": float(row["volume"]),
+        }
+        for row in reversed(rows)
+    ]
 
 
 def fetch_sina_top200() -> list[dict[str, Any]]:
@@ -440,6 +537,7 @@ def build_report(
     quote_ticktime: str,
     top_count: int,
     candidates: list[dict[str, Any]],
+    data_source: str,
 ) -> str:
     display: list[dict[str, Any]] = []
     for grade_name, limit in [("A", 5), ("B", 5), ("C", 5), ("剔除", 8)]:
@@ -460,7 +558,7 @@ def build_report(
         "post_close_validated：True",
         "",
         "## 数据说明",
-        "- 数据来源：新浪财经 Market_Center.getHQNodeData，按 amount 成交额倒序分页抓取；新浪 CN_MarketDataService 日K接口用于均线、RSI、MACD、KDJ计算。",
+        f"- 数据来源：{data_source}；K线优先使用 `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` 的 `daily_kline`，缺失时回退公开日K接口。",
         f"- 数据完整性：有效A股前200记录 {top_count} 条；候选交集 {len(candidates)} 条；前排样本 ticktime 覆盖到 {quote_ticktime}。",
         "- 指标口径：MA10/20/30、RSI14、MACD(12,26,9)、KDJ(9,3,3)由日K计算；MACD/KDJ只作辅助确认，不作单独买卖依据。",
         "- 市场环境：AI硬件链按成交额前排强度、核心票位置和过热程度判断；若涨停和大阳线密集，优先等待20日线企稳而非追涨。",
@@ -545,7 +643,11 @@ def main() -> None:
 
     trade_date = args.trade_date or now.strftime("%Y-%m-%d")
     run_time = now.strftime("%Y-%m-%d %H:%M:%S +08:00")
-    top = fetch_sina_top200()
+    market_cache_db = Path(args.market_cache_db)
+    top = [] if args.ignore_market_cache else fetch_cached_turnover_top200(market_cache_db, trade_date)
+    top_source = "ashare-kline-sqlite-cache SQLite turnover_top200" if top else "Sina turnover top200"
+    if not top:
+        top = fetch_sina_top200()
     if len(top) < 200:
         raise SystemExit(f"成交额前200不完整：仅获取 {len(top)} 条。")
 
@@ -559,7 +661,10 @@ def main() -> None:
         if not segment:
             continue
         try:
-            ind = indicators(fetch_sina_daily_k(row["symbol"]))
+            kline = [] if args.ignore_market_cache else fetch_cached_daily_k(market_cache_db, row["symbol"], trade_date)
+            if not kline:
+                kline = fetch_sina_daily_k(row["symbol"])
+            ind = indicators(kline)
         except Exception:
             ind = {}
         numeric_score = score(row, segment, ind)
@@ -585,9 +690,10 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / f"{trade_date}.md"
     out_path.write_text(
-        build_report(trade_date, run_time, quote_ticktime, len(top), candidates),
+        build_report(trade_date, run_time, quote_ticktime, len(top), candidates, top_source),
         encoding="utf-8",
     )
+    print(f"data_source: {top_source}")
     print(out_path)
 
 

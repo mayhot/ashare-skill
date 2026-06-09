@@ -26,6 +26,8 @@ python ashare-trend-buy/scripts/run_trend_buy.py --date YYYY-MM-DD
 - `--request-backoff 1.0`：重试基础等待秒数。
 - `--request-jitter 0.35`：重试和 K 线请求节奏中的随机抖动秒数，避免固定频率请求。
 - `--kline-request-delay 0.35`：每个 K 线 HTTP 请求前的基础等待秒数；接口不稳时可调到 `0.8` 或更高。
+- `--market-cache-db runs/ashare-kline-sqlite-cache/ashare_kline.sqlite`：优先读取 `ashare-kline-sqlite-cache` 维护的 SQLite；成交额榜用 `turnover_top200`，人气榜用 `popularity_top100`，日 K 用 `daily_kline`。
+- `--ignore-market-cache`：诊断公网数据源时跳过中央 SQLite。
 - `--no-network`：禁用网络；仅在本地候选池和 K 线可用时使用。
 
 When public quote APIs become unstable or start disconnecting after an initially successful run, prefer a conservative retry profile before re-running the full workflow:
@@ -51,9 +53,9 @@ runs/ashare-trend-buy/YYYY-MM-DD/YYYY-MM-DD.md
 ## 数据纪律
 
 1. 先确认筛选日期，不在规则中硬编码日期。
-2. 候选池必须拆成两路分别计算：成交额前200、东方财富个股人气榜（热榜）前100。成交额源优先使用用户提供的同日成交额前 200 CSV；否则从公开成交额排名获取前200。
+2. 候选池必须拆成两路分别计算：成交额前200、东方财富个股人气榜（热榜）前100。成交额源优先使用用户提供的同日成交额前 200 CSV；否则优先读取 `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` 的 `turnover_top200`，本地不足 200 条时再从公开成交额排名获取前200。人气榜优先读取同库 `popularity_top100`，本地不足 100 条时再联网获取。
 3. 排名数据若出现前排成交额为 0、价格为 0、缺失成交额或盘前 tick，应视为无效。
-4. 日 K/OHLC 用于计算 5/10/20/30/60 日均线、量比、MACD、KDJ；每只至少需要 60 根日 K。
+4. 日 K/OHLC 用于计算 5/10/20/30/60 日均线、量比、MACD、KDJ；每只至少需要 60 根日 K。日 K 优先读取 `ashare-kline-sqlite-cache` 的 `daily_kline`，单只缓存不足时再使用原公网 K 线回退。
 5. 最新 K 线日期若不同于筛选日期，必须在报告中说明，不能静默混用。
 6. MACD/KDJ 只做辅助确认或风险提示，不能单独触发 A 档或买点观察。
 

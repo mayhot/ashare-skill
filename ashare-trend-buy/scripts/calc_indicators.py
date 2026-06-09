@@ -1,5 +1,6 @@
 import argparse
 import json
+import sqlite3
 import sys
 import urllib.parse
 import urllib.request
@@ -19,6 +20,9 @@ def add_local_deps() -> None:
 
 
 add_local_deps()
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 
 try:
     import pandas as pd
@@ -122,6 +126,41 @@ def kdj_label(df: "pd.DataFrame") -> tuple[str, dict]:
     }
 
 
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_market_cache_daily(code: str, start_date: str, end_date: str, db_path: Path) -> "pd.DataFrame":
+    if not db_path.exists():
+        raise RuntimeError("market cache db not found")
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        if not sqlite_table_exists(conn, "daily_kline"):
+            raise RuntimeError("daily_kline table not found")
+        df = pd.read_sql_query(
+            """
+            SELECT trade_date AS date, open, high, low, close, volume, amount, pct_chg
+            FROM daily_kline
+            WHERE code = ? AND trade_date >= ? AND trade_date <= ?
+            ORDER BY trade_date
+            """,
+            conn,
+            params=[normalize_code(code), start_date, end_date],
+        )
+    if df.empty:
+        raise RuntimeError("empty local SQLite daily data")
+    for col in ["open", "high", "low", "close", "volume", "amount", "pct_chg"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.dropna(subset=["open", "high", "low", "close"])
+    if len(df) < 60:
+        raise RuntimeError(f"not enough local SQLite daily rows: {len(df)}")
+    return df
+
+
 def fetch_daily(code: str, start_date: str, end_date: str, adjustflag: str) -> "pd.DataFrame":
     if bs is None:
         raise RuntimeError("baostock not installed")
@@ -180,8 +219,21 @@ def fetch_tencent_daily(code: str, start_date: str, end_date: str) -> "pd.DataFr
     return df
 
 
-def fetch_with_source(code: str, start_date: str, end_date: str, adjustflag: str, source: str) -> tuple["pd.DataFrame", str]:
+def fetch_with_source(
+    code: str,
+    start_date: str,
+    end_date: str,
+    adjustflag: str,
+    source: str,
+    market_cache_db: Path,
+    ignore_market_cache: bool,
+) -> tuple["pd.DataFrame", str]:
     errors = []
+    if source == "auto" and not ignore_market_cache:
+        try:
+            return fetch_market_cache_daily(code, start_date, end_date, market_cache_db), "ashare-kline-sqlite-cache SQLite daily_kline"
+        except Exception as exc:
+            errors.append(f"SQLite: {exc}")
     if source in ("auto", "tencent"):
         try:
             return fetch_tencent_daily(code, start_date, end_date), "Tencent qfqday"
@@ -207,9 +259,25 @@ def fetch_with_source(code: str, start_date: str, end_date: str, adjustflag: str
     raise RuntimeError("; ".join(errors) or f"unsupported source: {source}")
 
 
-def calculate(code: str, start_date: str, end_date: str, adjustflag: str, source: str) -> dict:
+def calculate(
+    code: str,
+    start_date: str,
+    end_date: str,
+    adjustflag: str,
+    source: str,
+    market_cache_db: Path,
+    ignore_market_cache: bool,
+) -> dict:
     code = normalize_code(code)
-    df, actual_source = fetch_with_source(code, start_date, end_date, adjustflag, source)
+    df, actual_source = fetch_with_source(
+        code,
+        start_date,
+        end_date,
+        adjustflag,
+        source,
+        market_cache_db,
+        ignore_market_cache,
+    )
     macd, macd_values = macd_label(df)
     kdj, kdj_values = kdj_label(df)
     last = df.iloc[-1]
@@ -237,8 +305,14 @@ def parse_args() -> argparse.Namespace:
         "--source",
         default="auto",
         choices=["auto", "tencent", "baostock"],
-        help="Data source priority. auto tries Tencent first, then BaoStock.",
+        help="Data source priority. auto tries local SQLite first, then Tencent, then BaoStock.",
     )
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before public APIs in auto mode.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true", help="Skip ashare-kline-sqlite-cache SQLite reads.")
     parser.add_argument(
         "--adjustflag",
         default="2",
@@ -251,10 +325,23 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     codes = [normalize_code(code) for code in args.codes.split(",") if code.strip()]
+    market_cache_db = Path(args.market_cache_db)
+    if not market_cache_db.is_absolute():
+        market_cache_db = ROOT / market_cache_db
     results = []
     for code in codes:
         try:
-            results.append(calculate(code, args.start_date, args.end_date, args.adjustflag, args.source))
+            results.append(
+                calculate(
+                    code,
+                    args.start_date,
+                    args.end_date,
+                    args.adjustflag,
+                    args.source,
+                    market_cache_db,
+                    args.ignore_market_cache,
+                )
+            )
         except Exception as exc:
             results.append({"code": code, "error": str(exc)})
     try:

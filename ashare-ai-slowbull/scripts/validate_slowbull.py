@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import sqlite3
 import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass
@@ -17,6 +18,8 @@ from statistics import mean
 
 
 CN_TZ = timezone(timedelta(hours=8))
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_MARKET_CACHE_DB = ROOT / "runs" / "ashare-kline-sqlite-cache" / "ashare_kline.sqlite"
 USER_AGENT = {
     "Referer": "https://finance.sina.com.cn",
     "User-Agent": "Mozilla/5.0",
@@ -54,11 +57,65 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate a slowbull report.")
     parser.add_argument("--report", required=True, help="Path to YYYY-MM-DD.md report.")
     parser.add_argument("--output", help="Optional output Markdown path.")
+    parser.add_argument(
+        "--market-cache-db",
+        default=str(DEFAULT_MARKET_CACHE_DB),
+        help="SQLite cache from ashare-kline-sqlite-cache; used before Sina quotes.",
+    )
+    parser.add_argument("--ignore-market-cache", action="store_true")
     return parser.parse_args()
 
 
 def symbol(code: str) -> str:
     return ("sh" if code.startswith(("6", "9")) else "sz") + code
+
+
+def sqlite_table_exists(conn: sqlite3.Connection, table: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    return row is not None
+
+
+def fetch_cached_quotes(symbols: list[str], db_path: Path, *, ignore_cache: bool) -> dict[str, Quote]:
+    if ignore_cache or not symbols or not db_path.exists():
+        return {}
+    codes = [item[-6:] for item in symbols if re.fullmatch(r"s[hz]\d{6}", item)]
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    with sqlite3.connect(str(db_path.resolve())) as conn:
+        conn.row_factory = sqlite3.Row
+        if not sqlite_table_exists(conn, "stock_universe"):
+            return {}
+        rows = conn.execute(
+            f"""
+            SELECT code, name, latest_price, previous_close, pct_chg, amount, updated_at
+            FROM stock_universe
+            WHERE code IN ({placeholders})
+            """,
+            codes,
+        ).fetchall()
+    quotes: dict[str, Quote] = {}
+    for row in rows:
+        code = str(row["code"])
+        sym = symbol(code)
+        price = float(row["latest_price"] or 0)
+        preclose = float(row["previous_close"] or 0)
+        pct = float(row["pct_chg"] or ((price / preclose - 1) * 100 if preclose else 0))
+        updated = str(row["updated_at"] or "")
+        date_part, _, time_part = updated.partition(" ")
+        quotes[sym] = Quote(
+            name=row["name"] or "",
+            price=price,
+            preclose=preclose,
+            pct=pct,
+            amount_yi=float(row["amount"] or 0) / 1e8,
+            date=date_part,
+            time=time_part,
+        )
+    return quotes
 
 
 def fetch_sina(symbols: list[str]) -> dict[str, Quote]:
@@ -153,7 +210,12 @@ def reflection(rows: list[tuple[Pick, Quote]], index_quotes: dict[str, Quote]) -
     return [f"- {line}" for line in lines]
 
 
-def build_report(source_date: str, rows: list[tuple[Pick, Quote]], index_quotes: dict[str, Quote]) -> str:
+def build_report(
+    source_date: str,
+    rows: list[tuple[Pick, Quote]],
+    index_quotes: dict[str, Quote],
+    data_source: str,
+) -> str:
     now = datetime.now(CN_TZ).strftime("%Y-%m-%d %H:%M:%S +08:00")
     quote_times = sorted({f"{quote.date} {quote.time}" for _, quote in rows})
     lines = [
@@ -162,7 +224,7 @@ def build_report(source_date: str, rows: list[tuple[Pick, Quote]], index_quotes:
         f"源报告日期：{source_date}",
         f"验证时间：{now}",
         f"行情时间：{quote_times[0]} 至 {quote_times[-1]}" if quote_times else "行情时间：无",
-        "数据来源：新浪实时行情",
+        f"数据来源：{data_source}",
         "",
         "## 分组表现",
         *group_summary(rows),
@@ -188,11 +250,24 @@ def main() -> None:
     args = parse_args()
     report_path = Path(args.report)
     source_date, picks = parse_report(report_path)
-    quotes = fetch_sina([symbol(pick.code) for pick in picks])
+    market_cache_db = Path(args.market_cache_db)
+    if not market_cache_db.is_absolute():
+        market_cache_db = ROOT / market_cache_db
+    pick_symbols = [symbol(pick.code) for pick in picks]
+    quotes = fetch_cached_quotes(pick_symbols, market_cache_db, ignore_cache=args.ignore_market_cache)
+    cached_quote_count = len(quotes)
+    missing_symbols = [item for item in pick_symbols if item not in quotes]
+    if missing_symbols:
+        quotes.update(fetch_sina(missing_symbols))
     rows = [(pick, quotes[symbol(pick.code)]) for pick in picks if symbol(pick.code) in quotes]
     index_quotes = fetch_sina(list(INDEX_SYMBOLS))
     output = Path(args.output) if args.output else report_path.with_name(f"validation-{datetime.now(CN_TZ):%Y-%m-%d}.md")
-    output.write_text(build_report(source_date, rows, index_quotes), encoding="utf-8")
+    data_source = (
+        "ashare-kline-sqlite-cache SQLite stock_universe; missing symbols and indexes fallback to Sina realtime quotes"
+        if cached_quote_count
+        else "Sina realtime quotes"
+    )
+    output.write_text(build_report(source_date, rows, index_quotes, data_source), encoding="utf-8")
     print(output)
 
 

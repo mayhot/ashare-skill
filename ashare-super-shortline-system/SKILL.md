@@ -99,6 +99,8 @@ The script automatically derives these public fields from A-share daily K-lines 
 - basic pattern guess: `breakthrough`, `continuous_strong`, `platform_reentry`, `bull_volume`, or blank when no system buy point is visible
 - invalidation line and invalidation distance
 
+Data source rule for `--symbols`: the script first reads `runs/ashare-kline-sqlite-cache/ashare_kline.sqlite` `daily_kline`; if local rows are missing or fewer than 60 bars, it falls back to Tencent public K-line data. Use `--market-cache-db PATH` for a custom central cache and `--ignore-market-cache` only when diagnosing public-source differences. With `--no-network`, local SQLite is still allowed; if local K-lines are unavailable, the candidate is marked as data-unavailable instead of fabricating a setup.
+
 The user should still provide private fields that cannot be fetched: account returns, current position/risk ceiling, goal reached or not, and trader state.
 
 ## Source And Task Modes

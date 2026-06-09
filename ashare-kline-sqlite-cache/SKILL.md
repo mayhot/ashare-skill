@@ -1,11 +1,11 @@
 ---
 name: ashare-kline-sqlite-cache
-description: Build and maintain a SQLite cache of full-market A-share daily K-line data plus A-share popularity top 200 snapshots. Use when the user asks to fetch, initialize, update, schedule, inspect, or repair A-share daily OHLCV/K-line data for the whole A market, especially tasks requiring same-day syncs from 15:30 through 23:59:59 China time, one-time historical backfill, rich Eastmoney-style fields, SQLite storage, retaining the latest 126 trading days, or fetching today's popularity/hot-stock ranking without historical backfill.
+description: Build and maintain a SQLite cache of full-market A-share daily K-line data plus A-share popularity top 100 and turnover top 200 snapshots. Use when the user asks to fetch, initialize, update, schedule, inspect, or repair A-share daily OHLCV/K-line data for the whole A market, especially tasks requiring same-day syncs from 15:30 through 23:59:59 China time, one-time historical backfill, rich Eastmoney-style fields, SQLite storage, retaining the latest 126 trading days, today's ranking snapshots, or separate turnover ranking snapshots.
 ---
 
 # A-share K-line SQLite Cache
 
-Use this skill to maintain a local SQLite database of full-market A-share daily K-line data and popularity top 200 snapshots for research workflows. The bundled script handles one-time historical K-line initialization, daily incremental updates, field normalization, failure logging, K-line retention during historical initialization, and popularity ranking replacement for the requested trade date only.
+Use this skill to maintain a local SQLite database of full-market A-share daily K-line data, popularity top 100 snapshots, and turnover top 200 snapshots for research workflows. The bundled script handles one-time historical K-line initialization, daily incremental updates, field normalization, failure logging, K-line retention during historical initialization, and ranking-snapshot replacement for the requested trade date only.
 
 ## Quick Start
 
@@ -72,16 +72,16 @@ The default daily guard allows same-day runs from 15:30 through 23:59:59 Asia/Sh
 3. Check the console summary for `stock_count`, `rows_upserted`, `failures`, `latest_dates`, and `database`.
 4. If failures are non-zero, inspect `fetch_failures` in SQLite before relying on a complete market snapshot.
 5. Apply K-line retention pruning only during historical initialization (`mode=init`). Daily scheduled runs must not delete historical `daily_kline` dates.
-6. Fetch popularity ranking only for the requested `trade_date`; do not backfill historical popularity rankings.
-   Replacement and failure cleanup only delete rows for the requested `trade_date`; existing historical popularity rows are left untouched.
+6. Fetch popularity and turnover ranking only for today's trade date during/after the allowed same-day window; do not backfill historical ranking snapshots.
+   Replacement and failure cleanup only delete rows for the requested `trade_date`; existing historical ranking snapshots are left untouched.
 
 ## Failed Run Repair
 
 When a full-market run hangs, times out, or leaves partial same-day coverage, do not immediately rerun the whole market at high concurrency.
 
 1. Confirm there is no stale Python sync process still writing the database. If `sync_runs.finished_at` has null rows, treat them as audit clues and verify the process list before starting another writer.
-2. Check the requested trade date coverage against `stock_universe`, the latest K-line date summary, and `popularity_top200` count for the same trade date.
-3. If popularity already has a valid snapshot, repair K-lines with `--repair-missing`; repair batches force `--symbols-only` and preserve existing popularity rows by using `--skip-popularity`.
+2. Check the requested trade date coverage against `stock_universe`, the latest K-line date summary, and `popularity_top100`/`turnover_top200` counts for the same trade date.
+3. If popularity already has a valid snapshot, repair K-lines with `--repair-missing`; repair batches force `--symbols-only` and preserve existing ranking snapshots by using `--skip-popularity --skip-turnover-top200`.
 4. Use bounded batches first. A typical repair command is:
 
 ```powershell
@@ -98,7 +98,7 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
 ```
 
 5. If bounded batches improve coverage, rerun without `--repair-max-batches` or with a higher limit. If a source repeatedly fails, switch source order only for diagnosis, for example `--kline-sources eastmoney`, `--kline-sources baostock`, or `--kline-sources tencent`.
-6. Report final coverage as `cached_count / universe_count`, missing prefix distribution, latest K-line date summary, popularity row count, and whether remaining gaps are public-endpoint failures. Do not fabricate rows for remaining gaps.
+6. Report final coverage as `cached_count / universe_count`, missing prefix distribution, latest K-line date summary, popularity/turnover row counts, and whether remaining gaps are public-endpoint failures. Do not fabricate rows for remaining gaps.
 
 `--repair-missing` requires an existing `stock_universe`; run `--mode init` or a normal `--mode daily` first if the database is empty. The repair wrapper writes one normal `sync_runs` row per batch so failures can still be inspected in `fetch_failures`.
 
@@ -147,15 +147,21 @@ source, fetched_at, raw_line
 It also stores a latest market snapshot/universe table with fields such as latest price, percentage change, volume, amount, amplitude, high, low, open, previous close, volume ratio, turnover, PE, PB, total market value, circulating market value, speed, 5-minute change, 60-day change, YTD change, and raw JSON when available.
 Official CSI All Share universe fields include `board` (index name), `listing_date` (constituent file date), `industry`, `region`, and `official_source='CSI000985'` when available.
 
-The popularity table stores top 200 snapshots by trade date. The script fetches only the requested day after the close and does not backfill historical popularity data:
+The script stores two separate ranking tables by trade date. Both are fetched only for the requested day after the close and are not backfilled historically by default:
 
 ```text
+popularity_top100:
 trade_date, rank, code, name, exchange,
 hot_value, rank_change, latest_price, pct_chg,
 source, fetched_at, raw_json
+
+turnover_top200:
+trade_date, rank, code, name, exchange,
+amount, volume, turnover_ratio, latest_price, pct_chg,
+source, fetched_at, raw_json
 ```
 
-Data source priority is built for resilience: use CSI All Share (`000985`) constituents for the universe, Tencent first for K-line speed, then fall back to mootdx/TDX TCP K-lines, Eastmoney, TickFlow free daily K-lines, BaoStock, Sina daily history, NetEase historical CSV, and AkShare daily history when earlier sources return empty or fail. Tushare Pro is available only as an explicit K-line source when `TUSHARE_TOKEN` or `TS_TOKEN` is set. Use Eastmoney app ranking for popularity top 200 with optional AkShare fallback. Use `--universe-source market` only when the user explicitly accepts market-data-source stock lists instead of CSI All Share constituents.
+Data source priority is built for resilience: use CSI All Share (`000985`) constituents for the universe, Tencent first for K-line speed, then fall back to mootdx/TDX TCP K-lines, Eastmoney, TickFlow free daily K-lines, BaoStock, Sina daily history, NetEase historical CSV, and AkShare daily history when earlier sources return empty or fail. Tushare Pro is available only as an explicit K-line source when `TUSHARE_TOKEN` or `TS_TOKEN` is set. Use Eastmoney app ranking for popularity top 100 with optional AkShare fallback. Pull turnover top 200 separately from Sina Market Center `sort=amount` into `turnover_top200` only for same-day snapshots; historical `trade_date`s are skipped. Use `--universe-source market` only when the user explicitly accepts market-data-source stock lists instead of CSI All Share constituents.
 
 ## Multi-Source Auto Switching
 
@@ -163,7 +169,7 @@ Keep source switching automatic by default:
 
 - K-line default: `--kline-sources auto`, equivalent to `tencent,mootdx,eastmoney,tickflow,baostock,sina,netease,akshare`.
 - K-line source strategy default: `--kline-source-strategy rotate`, which rotates each symbol's first K-line source across non-serial sources to spread public-endpoint pressure. Use `--kline-source-strategy fallback` to preserve the listed source order for every symbol during diagnosis.
-- Popularity default: `--popularity-sources auto`, equivalent to `eastmoney,akshare`; `--popularity-limit` defaults to `200`.
+- Popularity default: `--popularity-sources auto`, equivalent to `eastmoney,akshare`; `--popularity-limit` defaults to `100`.
 - Universe default: `--universe-source official`, using cached CSI All Share (`CSI000985`) constituents except on the monthly refresh day.
 - Source circuit breaker default: `--source-fail-threshold 3`; after a K-line source has three consecutive request failures in one run, later symbol fetches skip it and go directly to the next configured source. Successful requests reset that source's failure streak. Already in-flight concurrent requests may still finish.
 - mootdx source: uses TDX TCP daily K-lines for unadjusted requests only. Adjusted requests skip mootdx, and BSE coverage should be judged from run-time source counts and failures rather than assumed.
@@ -181,7 +187,8 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
   --popularity-sources akshare,eastmoney
 ```
 
-Every normalized K-line row stores its actual source in `daily_kline.source`; popularity rows store their actual source in `popularity_top200.source`.
+Every normalized K-line row stores its actual source in `daily_kline.source`; popularity rows store their actual source in `popularity_top100.source`; turnover rows store theirs in `turnover_top200.source`.
+Ranking tables are same-day only; if `--trade-date` is historical, no ranking fetch occurs and no existing historical rows are touched.
 Progress logs also show K-line source counts, fallback count, and average successful source latency so slow or failing vendors are visible during a long run.
 If a source is disabled by the circuit breaker, progress logs include `disabled_sources=...`, `sync_runs.notes` records `kline_source_breaker`, and the JSON summary includes the breaker threshold, per-source request failure counts, failure streaks, and disabled source list.
 
@@ -219,7 +226,8 @@ The script calls AkShare's `index_stock_cons_csindex(symbol="000985")` wrapper f
 
 - `stock_universe`: latest full-market symbol list and rich spot fields.
 - `daily_kline`: normalized daily K-line rows keyed by `(code, trade_date)`.
-- `popularity_top200`: popularity top 200 snapshots keyed by `(trade_date, rank)`; sync replaces only the requested trade date.
+- `popularity_top100`: popularity top 100 snapshots keyed by `(trade_date, rank)`; sync replaces only the requested trade date.
+- `turnover_top200`: turnover top 200 snapshots keyed by `(trade_date, rank)`; sync replaces only the requested trade date.
 - `sync_runs`: run metadata, mode, counts, retained window, and latest-date summary.
 - `fetch_failures`: per-symbol failures for the run.
 
@@ -229,9 +237,9 @@ Use parameterized SQL when querying or extending the script. Do not parse SQLite
 
 Daily scheduled jobs must only clear or delete rows for the requested `trade_date`.
 
-- Allowed in `daily`: replacing current-day `popularity_top200` rows, or clearing current-day popularity rows when that fetch fails.
+- Allowed in `daily`: replacing current-day `popularity_top100`/`turnover_top200` rows, or clearing rows for that fetch date when either snapshot fetch fails.
 - Allowed in `init`: historical K-line backfill and retention pruning to the latest 126 trading dates.
-- Not allowed in `daily`: deleting older `daily_kline` dates, deleting older `popularity_top200` dates, or running broad cleanup statements without a `trade_date` predicate.
+- Not allowed in `daily`: deleting older `daily_kline` dates, deleting older `popularity_top100` or `turnover_top200` dates, or running broad cleanup statements without a `trade_date` predicate.
 
 ## Common Commands
 
@@ -281,7 +289,15 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
   --skip-popularity
 ```
 
-Repair missing K-line rows for one trade date while preserving existing popularity rows:
+Run daily sync without refreshing turnover:
+
+```powershell
+python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
+  --mode daily `
+  --skip-turnover-top200
+```
+
+Repair missing K-line rows for one trade date while preserving existing ranking rows:
 
 ```powershell
 python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py `
@@ -362,15 +378,16 @@ python ashare-kline-sqlite-cache/scripts/sync_ashare_kline.py --self-test
 ```
 
 2. Confirm `daily_kline` has no more than 126 distinct `trade_date` values after `mode=init`; do not require this check after `mode=daily`, because daily jobs must not prune older dates.
-3. Confirm `popularity_top200` has no duplicate ranks for the requested `trade_date`, and normally exactly 200 rows for that date after a successful live sync.
-4. Confirm recent dates have broad symbol coverage; a large `fetch_failures` count means the market cache is incomplete.
-5. After `--repair-missing`, confirm the final `cached_count`, `universe_count`, remaining missing prefix distribution, and `remaining_missing_sample` from the JSON summary.
-6. State clearly whether the data came from live network fetches or only from self-test/sample mode.
+3. Confirm `popularity_top100` has no duplicate ranks for the requested `trade_date`, and normally exactly 100 rows for that date after a successful live sync.
+4. Confirm `turnover_top200` has no duplicate ranks for the requested `trade_date`, and normally exactly 200 rows for that date after a successful live sync.
+5. Confirm recent dates have broad symbol coverage; a large `fetch_failures` count means the market cache is incomplete.
+6. After `--repair-missing`, confirm the final `cached_count`, `universe_count`, remaining missing prefix distribution, and `remaining_missing_sample` from the JSON summary.
+7. State clearly whether the data came from live network fetches or only from self-test/sample mode.
 
 ## Guardrails
 
 - Do not invent K-line rows, prices, volumes, or trade dates.
-- Do not carry forward yesterday's popularity ranking as today's ranking. If the popularity endpoint fails, clear only the requested `trade_date` rows and report the failure.
+- Do not carry forward yesterday's ranking snapshots as today's rankings. If any ranking endpoint fails, clear only the requested `trade_date` rows for that table and report the failure.
 - Do not treat the cache as investment advice; it is a research data store only.
 - Keep database files under `runs/ashare-kline-sqlite-cache/` unless the user specifies another path.
 - If public endpoints fail or rate-limit, report the failure count and retry later rather than filling gaps manually.
