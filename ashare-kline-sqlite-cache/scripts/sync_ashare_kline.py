@@ -2547,10 +2547,6 @@ def build_fetch_jobs(
     args: argparse.Namespace,
     seed_rows_imported: int,
 ) -> list[tuple[dict[str, Any], str, str]]:
-    if seed_rows_imported <= 0:
-        log(f"fetch plan: no seed rows, scheduling full window for {len(stocks)} symbols")
-        return [(stock, begin, end) for stock in stocks]
-
     status = kline_status_by_code(conn)
     jobs: list[tuple[dict[str, Any], str, str]] = []
     skipped_current = 0
@@ -2574,7 +2570,8 @@ def build_fetch_jobs(
     log(
         "fetch plan: "
         f"total={len(stocks)} skipped_current={skipped_current} "
-        f"gap_fill={gap_jobs} full={full_jobs}"
+        f"gap_fill={gap_jobs} full={full_jobs} "
+        f"seed_rows_imported={seed_rows_imported}"
     )
     return jobs
 
@@ -3819,7 +3816,7 @@ def self_test() -> None:
                     incremental_lookback_days=12,
                     retain_trading_days=126,
                 ),
-                seed_rows_imported=1,
+                seed_rows_imported=0,
             )
             job_by_code = {stock["code"]: job_begin for stock, job_begin, _job_end in jobs}
             assert "000001" not in job_by_code
