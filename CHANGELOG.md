@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-10
+
+- runs: Added the 2026-06-10 `ashare-ai-slowbull`, `ashare-holdings-check`, `ashare-super-shortline-system`, `ashare-trend-buy`, and `ashare-volume-doubled-uptrend` run artifacts.
+- skills: Updated `ashare-kline-sqlite-cache` K-line fetch planning to always check existing per-symbol `daily_kline` rows before network fetches, skipping symbols already covered through the requested trade date and fetching only missing gaps or uncached symbols.
+- notes: Validated the K-line SQLite cache script with `sync_ashare_kline.py --self-test`.
+
 ## 2026-06-09
 
 - runs: Added the 2026-06-09 `ashare-ai-slowbull`, `ashare-trend-buy`, and `ashare-volume-doubled-uptrend` run artifacts.

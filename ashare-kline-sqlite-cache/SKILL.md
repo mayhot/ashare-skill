@@ -65,8 +65,9 @@ The default daily guard allows same-day runs from 15:30 through 23:59:59 Asia/Sh
 2. Run `sync_ashare_kline.py`.
    - `--mode auto`: use `init` when the database is empty, otherwise use `daily`.
    - `--mode init`: fetch enough calendar days to seed at least 126 trading days, then prune.
-   - `--mode daily`: fetch only the recent window for all A-share symbols and upsert.
-   - `--seed-kline-csv`: import local K-line rows first, then fetch only missing symbols or each symbol's date gap after its latest cached K-line date.
+   - `--mode daily`: fetch only the recent window for symbols whose latest cached K-line date is older than the requested trade date, then upsert.
+   - Before every network K-line fetch, the script checks `daily_kline` by symbol. Symbols already cached through the requested `trade_date` are skipped; symbols with older cached rows fetch only the date gap; symbols with no cached rows fetch the full requested window.
+   - `--seed-kline-csv`: import local K-line rows first, then use the same per-symbol cache check before fetching from the network.
    - `--universe-source official`: use CSI All Share / 中证全指 (`000985`) constituents for `stock_universe`. This is the default.
    - The CSI All Share universe refreshes only on day 1 of each month by default. Other daily runs use cached `stock_universe` rows tagged `official_source='CSI000985'`; pass `--refresh-universe` to force refresh.
 3. Check the console summary for `stock_count`, `rows_upserted`, `failures`, `latest_dates`, and `database`.
