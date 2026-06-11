@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-06-11
+
+- runs: Added the 2026-06-11 `ashare-ai-slowbull`, `ashare-trend-buy`, and `ashare-volume-doubled-uptrend` run artifacts.
+- notes: No skill/source changes in this batch.
+
 ## 2026-06-10
 
 - runs: Added the 2026-06-10 `ashare-ai-slowbull`, `ashare-holdings-check`, `ashare-super-shortline-system`, `ashare-trend-buy`, and `ashare-volume-doubled-uptrend` run artifacts.
